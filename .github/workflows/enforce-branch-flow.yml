@@ -1,0 +1,17 @@
+# .github/workflows/enforce-branch-flow.yml
+name: Enforce PR source branch
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR source is develop or hotfix
+        if: github.head_ref != 'develop' && !startsWith(github.head_ref, 'hotfix/')
+        run: |
+          echo "❌ PRs into main must come from 'develop' or a 'hotfix/*' branch."
+          echo "Your branch: ${{ github.head_ref }}"
+          exit 1
