@@ -9,19 +9,46 @@ Dataset: Home Credit Default Risk (Kaggle) — 8 related CSV tables, ~700MB, joi
 This project mirrors real credit-bureau-style data (multiple tables, different grains,
 foreign keys) — a public-dataset stand-in for CERC-style consumer credit data.
 
+## Simulated source system
+
+To make the ingestion story realistic (and demonstrate relational-database extraction,
+a core skill for senior data engineering roles), the 8 CSVs are **not** read directly
+by Databricks. They're first loaded into a local **PostgreSQL** instance (via Docker),
+simulating the transactional origination system of a credit fintech — the kind of
+system this data would actually come from. From there, extraction happens via
+**Airbyte** (Postgres source connector), exactly as it would against a real production
+database.
+
+## Full pipeline flow
+
+```
+CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  ADLS Gen2 (Bronze)  →  Databricks/PySpark  →  Delta Lake (Silver/Gold)
+```
+
 ## Stack
 
-- Databricks (Community Edition) + Azure ADLS Gen2 (or DBFS as local stand-in)
+- **PostgreSQL** (local, via Docker) — simulated transactional origination source
+- **Airbyte** (Open Source, self-hosted via Docker Compose) — Postgres source →
+  Azure Blob Storage/ADLS Gen2 destination connector, landing Parquet
+- Azure Databricks (Unity Catalog-governed) + ADLS Gen2
 - Delta Lake + PySpark
 - Star schema modeling
 - Power BI or Databricks SQL Dashboard for the presentation layer
 
-## Architecture: Bronze → Silver → Gold
+## Architecture: Source → Ingestion → Bronze → Silver → Gold
 
-**Bronze (landing zone)** — the 8 raw CSVs loaded as Delta tables, no transformation:
-`application_train`, `application_test`, `bureau`, `bureau_balance`,
+**Source (simulated)** — the 8 CSVs loaded as relational tables in PostgreSQL
+(database `credit_origination_db`): `application`, `bureau`, `bureau_balance`,
 `previous_application`, `POS_CASH_balance`, `installments_payments`,
-`credit_card_balance`.
+`credit_card_balance`. Represents the real transactional system this data would
+normally come from.
+
+**Ingestion (Airbyte)** — Airbyte connection: Postgres source → Azure Blob
+Storage/ADLS Gen2 destination. Each sync extracts the 8 tables and lands them as
+Parquet files in the Bronze container.
+
+**Bronze (landing zone)** — the Parquet files Airbyte landed, loaded as Delta tables
+with no additional transformation — a mirror of the Postgres tables.
 
 **Silver (cleaned + conformed)** — null handling, type standardization (dates,
 categoricals), de-duplication, referential integrity checks across tables (e.g. every
@@ -40,8 +67,13 @@ delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
 
 ## Repo layout
 
-- `/notebooks` — PySpark notebooks, run in order: `01_bronze_ingestion.py`,
-  `02_silver_transform.py`, `03_gold_aggregation.py`, `04_quality_checks.py`
+- `/infra/postgres` — Docker Compose for local Postgres, plus the load script that
+  creates `credit_origination_db` and loads the 8 CSVs as tables
+- `/infra/airbyte` — Airbyte connection configs (source/destination definitions),
+  Docker Compose for self-hosted Airbyte
+- `/notebooks` — PySpark notebooks, run in order: `00_setup.sql`,
+  `01_bronze_ingestion.py`, `02_silver_transform.py`, `03_gold_aggregation.py`,
+  `04_quality_checks.py`
 - `/src` — shared PySpark logic (schema definitions, aggregation functions, quality
   check helpers) factored out of the notebooks
 - `/docs` — architecture diagram, ER diagram for the star schema, design notes
@@ -72,14 +104,24 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 
 ## Completion criteria
 
+- PostgreSQL running locally with the 8 tables loaded, simulating the transactional
+  source.
+- Airbyte configured and syncing successfully from Postgres to ADLS Gen2.
 - Pipeline runs end-to-end (bronze → gold) from a single command/orchestrated notebook.
 - Star schema documented with an ER diagram.
 - Power BI dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band, drill-down
   by individual application).
-- README with problem statement, architecture, and how to run.
+- README with problem statement, full architecture (including the ingestion layer),
+  and how to run.
 
 ## Status
 
-Project scaffold only — no data ingested yet, no notebooks written. Estimated 2-3
-weeks at 5-8h/week.
+Unity Catalog is fully wired up (metastore, storage credential, external location,
+catalog `consumer_lending_risk_lakehouse` with `bronze`/`silver`/`gold` schemas
+created). The 8 CSVs were uploaded directly to a Volume
+(`bronze.raw_files`) as a bypassed intermediate step — under the new architecture,
+the official Bronze source will be Parquet files landed by Airbyte, not that direct
+upload. Next: stand up Postgres via Docker, load the CSVs as tables, then set up
+Airbyte. Estimated 2-3 weeks at 5-8h/week (may run longer given the added ingestion
+layer).
