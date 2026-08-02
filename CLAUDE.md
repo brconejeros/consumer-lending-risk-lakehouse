@@ -92,6 +92,29 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 - Do not add any AI/Claude attribution to commits — no `Co-Authored-By: Claude` (or
   similar) trailer, no mention of Claude/AI assistance in commit messages. Commits
   should read as authored solely by the repo owner.
+- Commit messages use Conventional Commits prefixes: `feat:`, `fix:`, `chore:`,
+  `docs:`.
+
+## Branching conventions
+
+- Always branch from an up-to-date `develop` — never commit directly to
+  `develop` or `main`.
+- Before creating a new branch, check for existing branches other than
+  `develop`/`main` (`git branch -a`) — reuse or clean up in-progress work
+  instead of duplicating it.
+- Branch name prefixes:
+  - `feature/` — new functionality (e.g. `feature/unity-catalog-setup`)
+  - `bugfix/` — bug fixes
+  - `hotfix/` — urgent fixes branched from `main` directly, bypassing `develop`
+    (the only branches, besides `develop`, that `enforce-branch-flow.yml`
+    allows to PR into `main`)
+  - `chore/` — non-feature maintenance: dependency bumps, tooling, CI config
+  - `docs/` — README/CLAUDE.md-only changes
+- Merge feature/bugfix/chore/docs branches into `develop` via PR; `develop`
+  (or a `hotfix/*` branch) is later PR'd into `main`.
+- As soon as a branch is merged, delete it — both locally and on the remote
+  (`git branch -d <branch>` and `git push origin --delete <branch>`) — so
+  only `develop`/`main` and active work remain in `git branch -a`.
 
 ## Conventions
 
