@@ -38,10 +38,10 @@ CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  ADLS Gen2 
 ## Architecture: Source → Ingestion → Bronze → Silver → Gold
 
 **Source (simulated)** — the 8 CSVs loaded as relational tables in PostgreSQL
-(database `credit_origination_db`): `application`, `bureau`, `bureau_balance`,
-`previous_application`, `POS_CASH_balance`, `installments_payments`,
-`credit_card_balance`. Represents the real transactional system this data would
-normally come from.
+(database `credit_origination_db`): `application_train`, `application_test`,
+`bureau`, `bureau_balance`, `previous_application`, `POS_CASH_balance`,
+`installments_payments`, `credit_card_balance`. Represents the real transactional
+system this data would normally come from.
 
 **Ingestion (Airbyte)** — Airbyte connection: Postgres source → Azure Blob
 Storage/ADLS Gen2 destination. Each sync extracts the 8 tables and lands them as
