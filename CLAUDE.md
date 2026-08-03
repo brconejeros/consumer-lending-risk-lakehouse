@@ -13,11 +13,25 @@ foreign keys) — a public-dataset stand-in for CERC-style consumer credit data.
 
 To make the ingestion story realistic (and demonstrate relational-database extraction,
 a core skill for senior data engineering roles), the 8 CSVs are **not** read directly
-by Databricks. They're first loaded into a local **PostgreSQL** instance (via Docker),
-simulating the transactional origination system of a credit fintech — the kind of
-system this data would actually come from. From there, extraction happens via
-**Airbyte** (Postgres source connector), exactly as it would against a real production
-database.
+by Databricks. They're first loaded into **Azure Database for PostgreSQL – Flexible
+Server**, simulating the transactional origination system of a credit fintech — the
+kind of system this data would actually come from. From there, extraction happens via
+**Airbyte** (Postgres source connector, self-hosted on a small Azure VM), exactly as it
+would against a real production database.
+
+Postgres and Airbyte originally ran locally via Docker; both moved to Azure because:
+- **Local resource constraints** — the dev machine has limited disk/memory, and
+  running Postgres plus the full Airbyte stack (webapp, server, worker, temporal, db)
+  alongside Databricks work was too heavy.
+- **More realistic architecture** — a real fintech's origination database and ELT
+  tooling run in the cloud, not on an engineer's laptop; hosting them on Azure
+  strengthens the "production-like source system" story rather than weakening it.
+- **Cost** — both fit inside the Azure free account's 12-month free tier: Postgres
+  Flexible Server (Burstable B1ms, 32 GB storage + 32 GB backup) and one burstable VM
+  (B1s / B2pts v2 / B2ats v2, 750 hours/month) for Airbyte. Staying within these SKUs
+  and a single instance of each keeps the ingestion layer at $0, provided it's within
+  12 months of the free account's creation date and usage stays under the monthly
+  hour caps.
 
 ## Full pipeline flow
 
@@ -27,25 +41,62 @@ CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  ADLS Gen2 
 
 ## Stack
 
-- **PostgreSQL** (local, via Docker) — simulated transactional origination source
-- **Airbyte** (Open Source, self-hosted via Docker Compose) — Postgres source →
-  Azure Blob Storage/ADLS Gen2 destination connector, landing Parquet
+- **Terraform** (`azurerm` provider, plus the Airbyte provider for connector
+  config) — provisions the Postgres Flexible Server, networking, and the
+  Airbyte VM as code
+- **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms, free-tier
+  eligible) — simulated transactional origination source
+- **Airbyte** (Open Source, self-hosted via Docker Compose on a burstable Azure VM
+  — B1s / B2pts v2 / B2ats v2, free-tier eligible) — Postgres source → Azure Blob
+  Storage/ADLS Gen2 destination connector, landing Parquet
 - Azure Databricks (Unity Catalog-governed) + ADLS Gen2
 - Delta Lake + PySpark
 - Star schema modeling
 - Power BI or Databricks SQL Dashboard for the presentation layer
 
+## Infrastructure as Code (Terraform)
+
+Azure resources (networking, the Postgres Flexible Server, and the Airbyte VM)
+are provisioned with Terraform (`azurerm` provider) instead of clicked together
+manually — reproducible, versioned in git, and easy to rebuild from scratch.
+
+- **State backend**: remote state in an Azure Storage Account (Blob container),
+  not a local `.tfstate` file — keeps state off the disk-constrained dev machine
+  and fits the "always free" Blob Storage tier (5 GB LRS).
+- **Free-tier guardrails**: the Postgres SKU (Burstable B1ms) and VM SKU
+  (B1s / B2pts v2 / B2ats v2) are pinned as variable defaults rather than left
+  open, so a plan/apply can't accidentally provision a paid tier.
+- **Two-stage apply**:
+  1. `infra/terraform/platform` — VNet/subnet/NSG, the Postgres Flexible Server,
+     and the Airbyte VM. Cloud-init on the VM installs Docker and brings up the
+     existing `infra/airbyte` Docker Compose stack on boot.
+  2. `infra/terraform/airbyte-config` — once Airbyte is reachable at the VM's
+     IP (stage 1 output), uses the official Airbyte Terraform provider to
+     declare the Postgres source connector, ADLS Gen2 destination connector,
+     and the connection between them as code instead of manual UI clicks.
+     Kept as a separate stage/state because it depends on stage 1 already
+     being applied and Airbyte being up.
+- **Secrets**: Postgres admin password, VM SSH key, etc. passed via `TF_VAR_*`
+  env vars or a gitignored `terraform.tfvars` — never committed, same pattern
+  as the existing `.env` files.
+- **On/off**: `terraform apply`/`destroy` control whether resources *exist*,
+  but destroying and recreating the VM re-triggers the whole Airbyte install.
+  For day-to-day toggling without losing that setup, a small script
+  (`infra/terraform/toggle.sh`) wraps `az postgres flexible-server stop/start`
+  and `az vm deallocate/start` against the resources Terraform created.
+
 ## Architecture: Source → Ingestion → Bronze → Silver → Gold
 
-**Source (simulated)** — the 8 CSVs loaded as relational tables in PostgreSQL
-(database `credit_origination_db`): `application_train`, `application_test`,
-`bureau`, `bureau_balance`, `previous_application`, `POS_CASH_balance`,
-`installments_payments`, `credit_card_balance`. Represents the real transactional
-system this data would normally come from.
+**Source (simulated)** — the 8 CSVs loaded as relational tables in Azure Database
+for PostgreSQL – Flexible Server (database `credit_origination_db`):
+`application_train`, `application_test`, `bureau`, `bureau_balance`,
+`previous_application`, `POS_CASH_balance`, `installments_payments`,
+`credit_card_balance`. Represents the real transactional system this data would
+normally come from.
 
-**Ingestion (Airbyte)** — Airbyte connection: Postgres source → Azure Blob
-Storage/ADLS Gen2 destination. Each sync extracts the 8 tables and lands them as
-Parquet files in the Bronze container.
+**Ingestion (Airbyte)** — Airbyte (self-hosted on a small Azure VM) connection:
+Postgres source → Azure Blob Storage/ADLS Gen2 destination. Each sync extracts the
+8 tables and lands them as Parquet files in the Bronze container.
 
 **Bronze (landing zone)** — the Parquet files Airbyte landed, loaded as Delta tables
 with no additional transformation — a mirror of the Postgres tables.
@@ -67,10 +118,13 @@ delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
 
 ## Repo layout
 
-- `/infra/postgres` — Docker Compose for local Postgres, plus the load script that
-  creates `credit_origination_db` and loads the 8 CSVs as tables
-- `/infra/airbyte` — Airbyte connection configs (source/destination definitions),
-  Docker Compose for self-hosted Airbyte
+- `/infra/terraform` — Terraform config provisioning the Postgres Flexible
+  Server, networking, the Airbyte VM, and Airbyte's connector config; see
+  "Infrastructure as Code" for the module breakdown
+- `/infra/postgres` — the load script that creates `credit_origination_db` and
+  loads the 8 CSVs as tables (the server itself is Terraform-provisioned)
+- `/infra/airbyte` — Docker Compose for self-hosted Airbyte, brought up by the
+  Airbyte VM's cloud-init (the VM itself is Terraform-provisioned)
 - `/notebooks` — PySpark notebooks, run in order: `00_setup.sql`,
   `01_bronze_ingestion.py`, `02_silver_transform.py`, `03_gold_aggregation.py`,
   `04_quality_checks.py`
@@ -127,8 +181,8 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 
 ## Completion criteria
 
-- PostgreSQL running locally with the 8 tables loaded, simulating the transactional
-  source.
+- PostgreSQL running on Azure (Flexible Server, free-tier) with the 8 tables loaded,
+  simulating the transactional source.
 - Airbyte configured and syncing successfully from Postgres to ADLS Gen2.
 - Pipeline runs end-to-end (bronze → gold) from a single command/orchestrated notebook.
 - Star schema documented with an ER diagram.
@@ -145,6 +199,15 @@ catalog `consumer_lending_risk_lakehouse` with `bronze`/`silver`/`gold` schemas
 created). The 8 CSVs were uploaded directly to a Volume
 (`bronze.raw_files`) as a bypassed intermediate step — under the new architecture,
 the official Bronze source will be Parquet files landed by Airbyte, not that direct
-upload. Next: stand up Postgres via Docker, load the CSVs as tables, then set up
-Airbyte. Estimated 2-3 weeks at 5-8h/week (may run longer given the added ingestion
-layer).
+upload.
+
+Postgres was stood up locally via Docker first and loaded with all 8 tables as a
+first pass (`infra/postgres/load_csvs.py`); the local container, image, and volume
+have since been removed. The project is now moving that source to Azure Database
+for PostgreSQL – Flexible Server (see "Simulated source system" for why), with
+Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code"). Next:
+write the `infra/terraform/platform` module (networking + Postgres Flexible Server
++ Airbyte VM with cloud-init), apply it, re-run `load_csvs.py` against the new
+Postgres instance, then write `infra/terraform/airbyte-config` for the connector
+setup. Estimated 2-3 weeks at 5-8h/week (may run longer given the added
+ingestion layer).
