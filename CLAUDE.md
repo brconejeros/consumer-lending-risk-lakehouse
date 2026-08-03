@@ -41,6 +41,9 @@ CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  ADLS Gen2 
 
 ## Stack
 
+- **Terraform** (`azurerm` provider, plus the Airbyte provider for connector
+  config) — provisions the Postgres Flexible Server, networking, and the
+  Airbyte VM as code
 - **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms, free-tier
   eligible) — simulated transactional origination source
 - **Airbyte** (Open Source, self-hosted via Docker Compose on a burstable Azure VM
@@ -50,6 +53,37 @@ CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  ADLS Gen2 
 - Delta Lake + PySpark
 - Star schema modeling
 - Power BI or Databricks SQL Dashboard for the presentation layer
+
+## Infrastructure as Code (Terraform)
+
+Azure resources (networking, the Postgres Flexible Server, and the Airbyte VM)
+are provisioned with Terraform (`azurerm` provider) instead of clicked together
+manually — reproducible, versioned in git, and easy to rebuild from scratch.
+
+- **State backend**: remote state in an Azure Storage Account (Blob container),
+  not a local `.tfstate` file — keeps state off the disk-constrained dev machine
+  and fits the "always free" Blob Storage tier (5 GB LRS).
+- **Free-tier guardrails**: the Postgres SKU (Burstable B1ms) and VM SKU
+  (B1s / B2pts v2 / B2ats v2) are pinned as variable defaults rather than left
+  open, so a plan/apply can't accidentally provision a paid tier.
+- **Two-stage apply**:
+  1. `infra/terraform/platform` — VNet/subnet/NSG, the Postgres Flexible Server,
+     and the Airbyte VM. Cloud-init on the VM installs Docker and brings up the
+     existing `infra/airbyte` Docker Compose stack on boot.
+  2. `infra/terraform/airbyte-config` — once Airbyte is reachable at the VM's
+     IP (stage 1 output), uses the official Airbyte Terraform provider to
+     declare the Postgres source connector, ADLS Gen2 destination connector,
+     and the connection between them as code instead of manual UI clicks.
+     Kept as a separate stage/state because it depends on stage 1 already
+     being applied and Airbyte being up.
+- **Secrets**: Postgres admin password, VM SSH key, etc. passed via `TF_VAR_*`
+  env vars or a gitignored `terraform.tfvars` — never committed, same pattern
+  as the existing `.env` files.
+- **On/off**: `terraform apply`/`destroy` control whether resources *exist*,
+  but destroying and recreating the VM re-triggers the whole Airbyte install.
+  For day-to-day toggling without losing that setup, a small script
+  (`infra/terraform/toggle.sh`) wraps `az postgres flexible-server stop/start`
+  and `az vm deallocate/start` against the resources Terraform created.
 
 ## Architecture: Source → Ingestion → Bronze → Silver → Gold
 
@@ -84,12 +118,13 @@ delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
 
 ## Repo layout
 
-- `/infra/postgres` — provisioning for the Azure Database for PostgreSQL Flexible
-  Server, plus the load script that creates `credit_origination_db` and loads the
-  8 CSVs as tables
-- `/infra/airbyte` — provisioning for the Azure VM hosting Airbyte, Airbyte
-  connection configs (source/destination definitions), Docker Compose for
-  self-hosted Airbyte
+- `/infra/terraform` — Terraform config provisioning the Postgres Flexible
+  Server, networking, the Airbyte VM, and Airbyte's connector config; see
+  "Infrastructure as Code" for the module breakdown
+- `/infra/postgres` — the load script that creates `credit_origination_db` and
+  loads the 8 CSVs as tables (the server itself is Terraform-provisioned)
+- `/infra/airbyte` — Docker Compose for self-hosted Airbyte, brought up by the
+  Airbyte VM's cloud-init (the VM itself is Terraform-provisioned)
 - `/notebooks` — PySpark notebooks, run in order: `00_setup.sql`,
   `01_bronze_ingestion.py`, `02_silver_transform.py`, `03_gold_aggregation.py`,
   `04_quality_checks.py`
@@ -167,9 +202,12 @@ the official Bronze source will be Parquet files landed by Airbyte, not that dir
 upload.
 
 Postgres was stood up locally via Docker first and loaded with all 8 tables as a
-first pass (`infra/postgres/load_csvs.py`). The project is now moving that source
-to Azure Database for PostgreSQL – Flexible Server (see "Simulated source system"
-for why). Next: provision the Flexible Server on the free tier, re-run
-`load_csvs.py` against it, decommission the local Docker Postgres, then stand up
-Airbyte self-hosted on a free-tier Azure VM. Estimated 2-3 weeks at 5-8h/week (may
-run longer given the added ingestion layer).
+first pass (`infra/postgres/load_csvs.py`); the local container, image, and volume
+have since been removed. The project is now moving that source to Azure Database
+for PostgreSQL – Flexible Server (see "Simulated source system" for why), with
+Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code"). Next:
+write the `infra/terraform/platform` module (networking + Postgres Flexible Server
++ Airbyte VM with cloud-init), apply it, re-run `load_csvs.py` against the new
+Postgres instance, then write `infra/terraform/airbyte-config` for the connector
+setup. Estimated 2-3 weeks at 5-8h/week (may run longer given the added
+ingestion layer).
