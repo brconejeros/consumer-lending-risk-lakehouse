@@ -146,6 +146,8 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 - Do not add any AI/Claude attribution to commits — no `Co-Authored-By: Claude` (or
   similar) trailer, no mention of Claude/AI assistance in commit messages. Commits
   should read as authored solely by the repo owner.
+- The same rule applies to infrastructure: no "claude" or other AI references in
+  Azure resource names, resource group names, tags, or SSH key comments.
 - Commit messages use Conventional Commits prefixes: `feat:`, `fix:`, `chore:`,
   `docs:`.
 
@@ -203,11 +205,28 @@ upload.
 
 Postgres was stood up locally via Docker first and loaded with all 8 tables as a
 first pass (`infra/postgres/load_csvs.py`); the local container, image, and volume
-have since been removed. The project is now moving that source to Azure Database
+have since been removed. The project has since moved that source to Azure Database
 for PostgreSQL – Flexible Server (see "Simulated source system" for why), with
-Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code"). Next:
-write the `infra/terraform/platform` module (networking + Postgres Flexible Server
-+ Airbyte VM with cloud-init), apply it, re-run `load_csvs.py` against the new
-Postgres instance, then write `infra/terraform/airbyte-config` for the connector
-setup. Estimated 2-3 weeks at 5-8h/week (may run longer given the added
-ingestion layer).
+Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code").
+
+The `infra/terraform/platform` module is applied and live: the Postgres Flexible
+Server (`credit-origination-pg-01`) and the Airbyte VM (Docker + Compose installed
+via cloud-init, not yet running Airbyte itself) are both up in the `ingestion`
+resource group. Two deviations from the original plan, discovered only once we
+actually tried to provision, both due to capacity restrictions specific to this
+free-trial subscription (not something visible from docs or quota checks
+beforehand):
+- **Region**: `eastus` rejected both the Postgres SKU and the VM SKU outright
+  (`LocationIsOfferRestricted`); `eastus2` and `centralus` also rejected the VM
+  SKU. Postgres ended up in `centralus`; the VM had to move too since it needs
+  to be regionally colocated.
+- **VM size**: `Standard_B1s` had zero available capacity for this subscription
+  in every region tried, even though its quota (4 vCPUs) was untouched — a
+  physical capacity issue, not a quota one. Switched to `Standard_B2pts_v2`
+  (the ARM-based free-tier-eligible alternative), which required also switching
+  the VM image SKU to `server-arm64`.
+
+Next: write `infra/airbyte/docker-compose.yml` and get it running on the VM,
+re-run `load_csvs.py` against the new Postgres instance, then write
+`infra/terraform/airbyte-config` for the connector setup. Estimated 2-3 weeks at
+5-8h/week (may run longer given the added ingestion layer).

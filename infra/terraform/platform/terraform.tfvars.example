@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+# postgres_admin_password and admin_ip_address have no defaults - required.
+
+postgres_admin_password = "changeme"
+admin_ip_address        = "203.0.113.10"
