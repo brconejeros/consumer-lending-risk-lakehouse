@@ -92,8 +92,10 @@ manually — reproducible, versioned in git, and easy to rebuild from scratch.
      and the Airbyte VM. Cloud-init on the VM installs Docker (and the Compose
      plugin, unused by Airbyte itself but handy for ad-hoc container work);
      `infra/airbyte/install.sh` then installs `abctl` and runs
-     `abctl local install --low-resource-mode`, which stands up Airbyte via a
-     `kind` Kubernetes cluster on port 8000.
+     `abctl local install --low-resource-mode --chart-version 1.8.5
+     --insecure-cookies`, which stands up Airbyte via a `kind` Kubernetes
+     cluster on port 8000. The chart version and cookie flag aren't
+     optional - see "Status" for why.
   2. `infra/terraform/airbyte-config` — once Airbyte is reachable at the VM's
      IP (stage 1 output), uses the official Airbyte Terraform provider to
      declare the Postgres source connector, Databricks Lakehouse destination
@@ -261,8 +263,10 @@ Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code").
 The `infra/terraform/platform` module is applied and live: the Postgres Flexible
 Server (`credit-origination-pg-01`, `centralus`) has all 8 tables loaded, and
 Airbyte is installed and running on the VM (`Standard_D2as_v7`, `eastus2`) via
-`abctl` - the web UI responds on port 8000 and credentials are retrievable via
-`abctl local credentials`.
+`abctl`, pinned to chart `1.8.5` with `--insecure-cookies` (see below for why) -
+the web UI fully works: login succeeds and every workspace page (Sources,
+Destinations, Connections, Settings) renders correctly. Credentials are
+retrievable via `abctl local credentials`.
 
 `infra/terraform/airbyte-config` is also applied and live: the Postgres source,
 the Databricks Lakehouse destination, and the connection between them
@@ -340,6 +344,33 @@ docs/quota checks didn't reveal upfront:
   (`fix-kind-pod-nat.sh` / `fix-kind-pod-nat.service`, baked into cloud-init
   and also installed directly on the live VM) that re-adds the rule on every
   boot, idempotently.
+- **The Airbyte webapp itself crashed on every workspace page** (Sources,
+  Destinations, Connections, even Settings) with `React error #185` ("Maximum
+  update depth exceeded") - reproducible even in incognito, so not a browser
+  cache issue. Tried and ruled out in order: the `initial_setup_complete` /
+  `display_setup_wizard` workspace flags (had to flip these directly in
+  Postgres too - `abctl`'s bootstrap doesn't set them, and the normal setup
+  wizard couldn't complete because of this same crash, a chicken-and-egg
+  problem), a missing `workspace_admin` permission row for the default user,
+  and the `AIRBYTE_URL` ConfigMap value being stuck at `localhost:8000`
+  instead of the VM's actual address. None of it fixed the crash. Turned out
+  to be a confirmed **upstream bug** (`airbytehq/airbyte#76834`, filed against
+  `2.1.0`, closed only via a private internal ticket) - and the real root
+  cause: **`abctl`'s "latest" currently resolves to an alpha-tagged Helm chart**
+  (`1.9.x`+, whose `appVersion` strings all contain `-alpha-`, even though the
+  app itself reports a clean version like `2.1.1`). The actual last stable
+  chart is `1.8.5` (also its own `appVersion` - the two diverged after that).
+  Fixed by uninstalling, deleting the stale `~/.airbyte/abctl/data/` volume
+  directories (`abctl local uninstall` doesn't clean these up, and they carry
+  over an incompatible Postgres data directory across versions), and
+  reinstalling with `--chart-version 1.8.5`. That alone surfaced a second,
+  separate issue - login succeeded but no session cookie was set ("you appear
+  to have deployed over HTTP") - fixed with `--insecure-cookies` (also
+  required a full reinstall to apply; no `helm` CLI is available on the VM to
+  patch it in place). A fresh install means a new workspace ID and new
+  `abctl local credentials` - the Postgres source, Databricks destination,
+  and connection all had to be recreated via `terraform state rm` +
+  `apply` once the new credentials were in `terraform.tfvars`.
 
 Next: run an actual sync on the `Credit Origination -> Bronze` connection and
 verify the 8 tables land correctly as Delta tables in
