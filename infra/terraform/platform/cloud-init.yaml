@@ -22,18 +22,27 @@ write_files:
       # tests all pass fine. Discovered by comparing a raw TCP test from
       # inside the kind node container (worked) against the same test from
       # inside an actual scheduled pod (timed out).
-      set -euo pipefail
+      # Waiting for the Docker container alone isn't enough - it can show
+      # "running" well before the Kubernetes API server inside it is ready
+      # to accept kubectl calls, especially on a cold VM boot. Retry the
+      # actual kubectl call instead.
+      set -uo pipefail
 
-      for i in $(seq 1 30); do
-        if docker ps --format '{{.Names}}' | grep -q '^airbyte-abctl-control-plane$'; then
+      for i in $(seq 1 60); do
+        if docker exec airbyte-abctl-control-plane kubectl get node airbyte-abctl-control-plane >/dev/null 2>&1; then
           break
         fi
-        sleep 2
+        sleep 5
       done
 
       POD_CIDR=$(docker exec airbyte-abctl-control-plane kubectl get node airbyte-abctl-control-plane -o jsonpath='{.spec.podCIDR}')
       BRIDGE=$(docker network inspect kind --format '{{.Id}}' | cut -c1-12)
       BRIDGE="br-${BRIDGE}"
+
+      if [ -z "$POD_CIDR" ]; then
+        echo "Timed out waiting for the Kubernetes API server to become ready" >&2
+        exit 1
+      fi
 
       if ! iptables -t nat -C POSTROUTING -s "$POD_CIDR" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s "$POD_CIDR" ! -o "$BRIDGE" -j MASQUERADE
