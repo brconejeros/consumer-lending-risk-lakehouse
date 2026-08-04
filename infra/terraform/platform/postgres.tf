@@ -20,6 +20,13 @@ resource "azurerm_postgresql_flexible_server" "origination" {
   }
 }
 
+resource "azurerm_postgresql_flexible_server_database" "credit_origination" {
+  name      = "credit_origination_db"
+  server_id = azurerm_postgresql_flexible_server.origination.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
+}
+
 # The Airbyte VM's own public IP - the ELT source connector runs here.
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_airbyte_vm" {
   name             = "allow-airbyte-vm"
