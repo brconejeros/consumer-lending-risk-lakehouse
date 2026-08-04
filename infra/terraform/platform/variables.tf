@@ -1,7 +1,13 @@
 variable "location" {
-  description = "Azure region for the ingestion resources (independent of the resource group's own location)"
+  description = "Azure region for the Postgres Flexible Server (independent of the resource group's own location)"
   type        = string
   default     = "centralus"
+}
+
+variable "vm_location" {
+  description = "Azure region for the Airbyte VM and its networking (VNet/subnet/NSG/public IP/NIC). Kept independent of Postgres's region - they only talk over Postgres's public endpoint, no VNet peering needed - since this subscription's capacity restrictions vary per region and per VM size"
+  type        = string
+  default     = "eastus2"
 }
 
 variable "resource_group_name" {
@@ -41,15 +47,15 @@ variable "postgres_version" {
 }
 
 variable "vm_size" {
-  description = "Free-tier-eligible burstable VM size for the Airbyte host"
+  description = "VM size for the Airbyte host. Not free-tier eligible - all three free-tier burstable sizes (B1s/B2pts_v2/B2ats_v2) cap at 1GB RAM, not enough for abctl's Kubernetes control plane"
   type        = string
-  default     = "Standard_B2pts_v2"
+  default     = "Standard_D2as_v7"
 }
 
 variable "vm_image_sku" {
-  description = "Ubuntu 24.04 LTS image SKU matching vm_size's architecture (server-arm64 for B2pts_v2, server for x64 sizes like B1s/B2ats_v2)"
+  description = "Ubuntu 24.04 LTS image SKU matching vm_size's architecture (server-arm64 for B2pts_v2, server for x64 sizes like B1s/B2ats_v2/B2s)"
   type        = string
-  default     = "server-arm64"
+  default     = "server"
 }
 
 variable "vm_admin_username" {

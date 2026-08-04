@@ -1,6 +1,6 @@
 resource "azurerm_public_ip" "airbyte_vm" {
   name                = "airbyte-vm-pip"
-  location            = var.location
+  location            = var.vm_location
   resource_group_name = data.azurerm_resource_group.ingestion.name
   allocation_method   = "Static"
   sku                 = "Standard"
@@ -8,7 +8,7 @@ resource "azurerm_public_ip" "airbyte_vm" {
 
 resource "azurerm_network_interface" "airbyte_vm" {
   name                = "airbyte-vm-nic"
-  location            = var.location
+  location            = var.vm_location
   resource_group_name = data.azurerm_resource_group.ingestion.name
 
   ip_configuration {
@@ -22,7 +22,7 @@ resource "azurerm_network_interface" "airbyte_vm" {
 resource "azurerm_linux_virtual_machine" "airbyte" {
   name                = "airbyte-vm"
   resource_group_name = data.azurerm_resource_group.ingestion.name
-  location            = var.location
+  location            = var.vm_location
   size                = var.vm_size
   admin_username      = var.vm_admin_username
 

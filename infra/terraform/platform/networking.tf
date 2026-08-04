@@ -8,7 +8,7 @@ data "azurerm_resource_group" "ingestion" {
 resource "azurerm_virtual_network" "ingestion" {
   name                = "ingestion-vnet"
   address_space       = ["10.20.0.0/16"]
-  location            = var.location
+  location            = var.vm_location
   resource_group_name = data.azurerm_resource_group.ingestion.name
 }
 
@@ -21,7 +21,7 @@ resource "azurerm_subnet" "airbyte" {
 
 resource "azurerm_network_security_group" "airbyte_vm" {
   name                = "airbyte-vm-nsg"
-  location            = var.location
+  location            = var.vm_location
   resource_group_name = data.azurerm_resource_group.ingestion.name
 
   security_rule {
