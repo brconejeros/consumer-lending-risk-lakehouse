@@ -46,9 +46,11 @@ CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  ADLS Gen2 
   Airbyte VM as code
 - **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms, free-tier
   eligible) — simulated transactional origination source
-- **Airbyte** (Open Source, self-hosted via Docker Compose on a burstable Azure VM
-  — B1s / B2pts v2 / B2ats v2, free-tier eligible) — Postgres source → Azure Blob
-  Storage/ADLS Gen2 destination connector, landing Parquet
+- **Airbyte** (Open Source, self-hosted via `abctl` on a burstable Azure VM —
+  B1s / B2pts v2 / B2ats v2, free-tier eligible) — Postgres source → Azure Blob
+  Storage/ADLS Gen2 destination connector, landing Parquet. `abctl` deploys
+  Airbyte via a local `kind` Kubernetes cluster running on Docker; Docker
+  Compose deployment was deprecated by Airbyte in August 2024
 - Azure Databricks (Unity Catalog-governed) + ADLS Gen2
 - Delta Lake + PySpark
 - Star schema modeling
@@ -63,13 +65,29 @@ manually — reproducible, versioned in git, and easy to rebuild from scratch.
 - **State backend**: remote state in an Azure Storage Account (Blob container),
   not a local `.tfstate` file — keeps state off the disk-constrained dev machine
   and fits the "always free" Blob Storage tier (5 GB LRS).
-- **Free-tier guardrails**: the Postgres SKU (Burstable B1ms) and VM SKU
-  (B1s / B2pts v2 / B2ats v2) are pinned as variable defaults rather than left
-  open, so a plan/apply can't accidentally provision a paid tier.
+- **Free-tier guardrails**: the Postgres SKU (Burstable B1ms) is pinned as a
+  variable default to stay free-tier. The VM SKU is **not** free-tier - all
+  three free-tier burstable sizes (B1s/B2pts_v2/B2ats_v2) cap at 1GB RAM,
+  which isn't enough for `abctl`'s Kubernetes control plane (see "Status" for
+  what this actually took to discover). Running `Standard_D2as_v7` (2 vCPU/
+  8GB) instead, at real cost.
+- **Postgres and the VM live in different regions** (`location` vs.
+  `vm_location` variables) - they only talk over Postgres's public endpoint,
+  no VNet peering, so there's no need to co-locate them. This split exists
+  because this subscription (a Free Trial) has its own per-region,
+  per-SKU allow-list - a size/region combo that fails isn't necessarily a
+  transient capacity issue. Check what's actually allowed before assuming a
+  size will work:
+  `az rest --method get --url "https://management.azure.com/subscriptions/<id>/providers/Microsoft.Compute/skus?api-version=2021-07-01&\$filter=location eq '<region>'"`
+  and look for VM SKUs with an empty `restrictions` array (`az vm list-skus`
+  works too but is far slower in practice).
 - **Two-stage apply**:
   1. `infra/terraform/platform` — VNet/subnet/NSG, the Postgres Flexible Server,
-     and the Airbyte VM. Cloud-init on the VM installs Docker and brings up the
-     existing `infra/airbyte` Docker Compose stack on boot.
+     and the Airbyte VM. Cloud-init on the VM installs Docker (and the Compose
+     plugin, unused by Airbyte itself but handy for ad-hoc container work);
+     `infra/airbyte/install.sh` then installs `abctl` and runs
+     `abctl local install --low-resource-mode`, which stands up Airbyte via a
+     `kind` Kubernetes cluster on port 8000.
   2. `infra/terraform/airbyte-config` — once Airbyte is reachable at the VM's
      IP (stage 1 output), uses the official Airbyte Terraform provider to
      declare the Postgres source connector, ADLS Gen2 destination connector,
@@ -123,8 +141,9 @@ delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
   "Infrastructure as Code" for the module breakdown
 - `/infra/postgres` — the load script that creates `credit_origination_db` and
   loads the 8 CSVs as tables (the server itself is Terraform-provisioned)
-- `/infra/airbyte` — Docker Compose for self-hosted Airbyte, brought up by the
-  Airbyte VM's cloud-init (the VM itself is Terraform-provisioned)
+- `/infra/airbyte` — `install.sh` installing `abctl` and running
+  `abctl local install` for self-hosted Airbyte (the VM itself is
+  Terraform-provisioned)
 - `/notebooks` — PySpark notebooks, run in order: `00_setup.sql`,
   `01_bronze_ingestion.py`, `02_silver_transform.py`, `03_gold_aggregation.py`,
   `04_quality_checks.py`
@@ -210,23 +229,38 @@ for PostgreSQL – Flexible Server (see "Simulated source system" for why), with
 Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code").
 
 The `infra/terraform/platform` module is applied and live: the Postgres Flexible
-Server (`credit-origination-pg-01`) and the Airbyte VM (Docker + Compose installed
-via cloud-init, not yet running Airbyte itself) are both up in the `ingestion`
-resource group. Two deviations from the original plan, discovered only once we
-actually tried to provision, both due to capacity restrictions specific to this
-free-trial subscription (not something visible from docs or quota checks
-beforehand):
-- **Region**: `eastus` rejected both the Postgres SKU and the VM SKU outright
-  (`LocationIsOfferRestricted`); `eastus2` and `centralus` also rejected the VM
-  SKU. Postgres ended up in `centralus`; the VM had to move too since it needs
-  to be regionally colocated.
-- **VM size**: `Standard_B1s` had zero available capacity for this subscription
-  in every region tried, even though its quota (4 vCPUs) was untouched — a
-  physical capacity issue, not a quota one. Switched to `Standard_B2pts_v2`
-  (the ARM-based free-tier-eligible alternative), which required also switching
-  the VM image SKU to `server-arm64`.
+Server (`credit-origination-pg-01`, `centralus`) has all 8 tables loaded, and
+Airbyte is installed and running on the VM (`Standard_D2as_v7`, `eastus2`) via
+`abctl` - the web UI responds on port 8000 and credentials are retrievable via
+`abctl local credentials`. Both are currently **stopped** (`toggle.sh stop` /
+`az vm deallocate`) to avoid unnecessary cost - leave them off until asked to
+turn them back on.
 
-Next: write `infra/airbyte/docker-compose.yml` and get it running on the VM,
-re-run `load_csvs.py` against the new Postgres instance, then write
-`infra/terraform/airbyte-config` for the connector setup. Estimated 2-3 weeks at
-5-8h/week (may run longer given the added ingestion layer).
+Getting here took several rounds of discovering things the docs/quota checks
+didn't reveal upfront:
+- **Docker Compose deployment for Airbyte OSS was deprecated in August 2024.**
+  Only `abctl` (Kubernetes via `kind`, on Docker) is supported now - CLAUDE.md
+  originally committed to Docker Compose before this was discovered.
+- **All three free-tier VM sizes (B1s/B2pts_v2/B2ats_v2) cap at 1GB RAM** -
+  nowhere near enough for `abctl`'s Kubernetes control plane, even in
+  `--low-resource-mode`. The first real install attempt (on `B2pts_v2`, ARM)
+  failed after ~11 minutes with the control plane's healthz checks timing out.
+  This is a hard ceiling on the whole free-tier VM family, not a fluke.
+- **This subscription (Free Trial) has its own per-region, per-SKU allow-list**
+  that has nothing to do with quota - `Standard_B2s`, then `Standard_D2s_v3`,
+  both failed with `SkuNotAvailable`/capacity restrictions in `centralus`, and
+  `D2s_v3` failed in `eastus2` too, despite untouched quota for all of them.
+  Querying the Resource SKUs API directly (see "Infrastructure as Code") for
+  SKUs with an empty `restrictions` array found `Standard_D2as_v7`, which
+  worked immediately in `eastus2`.
+- Postgres and the VM ended up in different regions as a result (`location`
+  vs. `vm_location`) - fine, since they only talk over Postgres's public
+  endpoint.
+
+Next: the Postgres firewall rule for the VM's IP needs reconciling next time
+both are started (the VM's IP changed across the region moves; a plain
+`terraform apply` once Postgres is back up will pick this up), then write
+`infra/terraform/airbyte-config` for the connector setup, then re-run
+`load_csvs.py` if the data ever needs reloading. Estimated 2-3 weeks at
+5-8h/week (already running longer given the added ingestion layer and the
+troubleshooting above).
