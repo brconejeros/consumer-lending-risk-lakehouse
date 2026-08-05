@@ -185,6 +185,11 @@ Validate with Delta Live Tables Expectations or Great Expectations:
   Azure resource names, resource group names, tags, or SSH key comments.
 - Commit messages use Conventional Commits prefixes: `feat:`, `fix:`, `chore:`,
   `docs:`.
+- Never put an actual secret value (password, key, token, connection string)
+  in CLAUDE.md or any other tracked file - only point at where it lives (a
+  gitignored path, e.g. the list in "Working locally"). Before writing to a
+  tracked file or staging changes, check whether anything in it should be a
+  secret instead and route it into a `.env`/`.tfvars` file if so.
 
 ## Branching conventions
 
@@ -215,6 +220,56 @@ Validate with Delta Live Tables Expectations or Great Expectations:
   cells when logic is reused across notebooks.
 - Table/column naming stays in the source dataset's original casing
   (e.g. `SK_ID_CURR`, `AMT_INCOME_TOTAL`) for traceability back to the raw CSVs.
+
+## Working locally
+
+Operational details for resuming work in a fresh session - not architecture,
+just "how do I actually run the next command."
+
+- **Tools live in `~/.local/bin`, not on PATH by default** - `uv`, `terraform`,
+  `gh`, `az`, `databricks` were all installed there (no sudo on this machine).
+  Every fresh shell needs `export PATH="$HOME/.local/bin:$PATH"` first.
+- **VM SSH key**: `~/.ssh/consumer-lending-airbyte-vm` (outside the repo, not
+  gitignored because it doesn't need to be - it's just not in the repo at
+  all). `ssh -i ~/.ssh/consumer-lending-airbyte-vm azureuser@<vm-ip>`.
+- **The VM's public IP is dynamic** - it's changed three times already across
+  region/size moves. Get the current one from
+  `terraform output airbyte_vm_public_ip` in `infra/terraform/platform`;
+  don't assume a previously-known IP is still current.
+- **Real secrets already exist on disk, gitignored** - don't ask "what's the
+  password," read the file:
+  - `infra/terraform/.env` - `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/
+    `ARM_TENANT_ID`/`ARM_SUBSCRIPTION_ID` for the Terraform service principal,
+    sourced before every `terraform` command in both stages.
+  - `infra/terraform/platform/terraform.tfvars` - Postgres admin password,
+    admin IP.
+  - `infra/terraform/airbyte-config/terraform.tfvars` - Databricks
+    client_id/secret. Airbyte client_id/secret are also here but only used by
+    `get_token.sh`, not the provider directly (see "Infrastructure as Code").
+  - `~/.databrickscfg` - a Databricks PAT for the `databricks` CLI (SQL
+    grants, warehouse start/stop). Lives on the dev machine, not the VM.
+- **`get_token.sh` needs three env vars exported first, then eval'd**:
+  ```
+  export AIRBYTE_CLIENT_ID="..."     # from terraform.tfvars
+  export AIRBYTE_CLIENT_SECRET="..." # from terraform.tfvars
+  export AIRBYTE_VM_IP="..."         # from terraform output
+  eval "$(./get_token.sh)"           # sets TF_VAR_airbyte_bearer_token
+  ```
+- **`az`/`gh`/`databricks` auth were all set up interactively** (browser
+  device-code flows) - if a fresh session hits auth errors from any of them,
+  that's expected; these can't be restarted programmatically. Ask the user to
+  re-run `az login` / `gh auth login`, or regenerate the Databricks PAT.
+
+**Resuming work, in order:**
+1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes;
+   both Postgres and the VM need to actually come up.
+2. If the VM was *recreated* (not just restarted) since the last session, its
+   IP changed - run a plain `terraform apply` in `platform` to reconcile the
+   Postgres firewall rule to the new IP.
+3. Get a fresh Airbyte bearer token (`get_token.sh`, above) before touching
+   `infra/terraform/airbyte-config` - the previous one expired in ~15 minutes.
+4. `terraform plan` in `airbyte-config` to check for drift before assuming
+   the source/destination/connection are still intact.
 
 ## Completion criteria
 
