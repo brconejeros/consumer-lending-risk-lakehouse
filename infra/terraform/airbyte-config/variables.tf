@@ -19,7 +19,7 @@ variable "airbyte_bearer_token" {
 variable "airbyte_workspace_id" {
   description = "abctl creates exactly one default workspace per install - its ID, found via GET /api/public/v1/workspaces"
   type        = string
-  default     = "ee85476a-e0ad-4203-8d18-f3a518b78a28"
+  default     = "38ad6937-82f1-466d-833b-bc25412e2ff6"
 }
 
 variable "postgres_admin_username" {
