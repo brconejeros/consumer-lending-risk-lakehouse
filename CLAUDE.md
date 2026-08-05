@@ -16,105 +16,102 @@ a core skill for senior data engineering roles), the 8 CSVs are **not** read dir
 by Databricks. They're first loaded into **Azure Database for PostgreSQL – Flexible
 Server**, simulating the transactional origination system of a credit fintech — the
 kind of system this data would actually come from. From there, extraction happens via
-**Airbyte** (Postgres source connector, self-hosted on a small Azure VM), exactly as it
-would against a real production database.
+**Azure Data Factory** (Copy Activity, Postgres source), exactly as it would against a
+real production database.
 
-Postgres and Airbyte originally ran locally via Docker; both moved to Azure because:
-- **Local resource constraints** — the dev machine has limited disk/memory, and
-  running Postgres plus the full Airbyte stack (webapp, server, worker, temporal, db)
-  alongside Databricks work was too heavy.
-- **More realistic architecture** — a real fintech's origination database and ELT
-  tooling run in the cloud, not on an engineer's laptop; hosting them on Azure
-  strengthens the "production-like source system" story rather than weakening it.
-- **Cost** — both fit inside the Azure free account's 12-month free tier: Postgres
-  Flexible Server (Burstable B1ms, 32 GB storage + 32 GB backup) and one burstable VM
-  (B1s / B2pts v2 / B2ats v2, 750 hours/month) for Airbyte. Staying within these SKUs
-  and a single instance of each keeps the ingestion layer at $0, provided it's within
-  12 months of the free account's creation date and usage stays under the monthly
-  hour caps.
+Postgres originally ran locally via Docker; it moved to Azure because:
+- **Local resource constraints** — the dev machine has limited disk/memory.
+- **More realistic architecture** — a real fintech's origination database runs in the
+  cloud, not on an engineer's laptop.
+- **Cost** — Postgres Flexible Server (Burstable B1ms, 32 GB storage + 32 GB backup)
+  fits inside the Azure free account's 12-month free tier, provided it's within 12
+  months of the free account's creation date and usage stays under the monthly hour
+  caps. ADF itself is billed per pipeline run/activity, not per hour, and this
+  project's batch-load usage costs cents per run.
+
+Ingestion was originally built on self-hosted Airbyte (via `abctl` on a dedicated Azure
+VM) instead of ADF — abandoned after persistent sync failures on tables larger than
+~50K rows that resisted every attempted fix. See "Status" for a short summary and git
+history on the `bugfix/*`/`feature/adf-*` branches for the full story.
 
 ## Full pipeline flow
 
 ```
-CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Airbyte  →  Databricks Unity Catalog (Bronze Delta tables)  →  PySpark (Silver/Gold)
+CSVs (Kaggle)  →  PostgreSQL (simulated source)  →  Azure Data Factory (Parquet landing in ADLS Gen2)  →  Databricks notebooks (Bronze Delta tables)  →  PySpark (Silver/Gold)
 ```
 
-Airbyte writes directly into Bronze as Delta tables via its Databricks Lakehouse
-destination connector - no intermediate Parquet/Blob landing step, no separate
-`01_bronze_ingestion.py` load (see "Status" for why the original ADLS Gen2/Blob
-Storage plan changed).
+ADF's Copy Activity reads each of the 8 Postgres tables and lands them as Parquet in a
+dedicated ADLS Gen2 storage account (`landing` filesystem, one folder per table). A
+Databricks notebook per table then reads that Parquet and writes it into Unity
+Catalog's `bronze` schema as a Delta table (full overwrite each run - see "Architecture"
+and "Repo layout").
 
 ## Stack
 
-- **Terraform** (`azurerm` provider, plus the Airbyte provider for connector
-  config) — provisions the Postgres Flexible Server, networking, and the
-  Airbyte VM as code
+- **Terraform** (`azurerm` provider) — provisions the Postgres Flexible Server, the
+  Data Factory instance, and the ADLS Gen2 landing storage account as code
 - **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms, free-tier
   eligible) — simulated transactional origination source
-- **Airbyte** (Open Source, self-hosted via `abctl` on a burstable Azure VM —
-  B1s / B2pts v2 / B2ats v2, free-tier eligible) — Postgres source → Databricks
-  Lakehouse destination connector, writing directly into Unity Catalog's
-  `bronze` schema as Delta tables (no intermediate Blob/Parquet landing).
-  `abctl` deploys Airbyte via a local `kind` Kubernetes cluster running on
-  Docker; Docker Compose deployment was deprecated by Airbyte in August 2024
-- Azure Databricks (Unity Catalog-governed) + ADLS Gen2
+- **Azure Data Factory** — one pipeline (`ForEach` + parameterized Copy Activity,
+  sequential) reads each of the 8 Postgres tables and lands them as Parquet in ADLS
+  Gen2. Fully managed/serverless - billed per pipeline run, not per VM-hour
+- Azure Databricks (Unity Catalog-governed) + ADLS Gen2 (both for the landing zone and
+  the metastore's own managed storage, kept as separate storage accounts)
 - Delta Lake + PySpark
 - Star schema modeling
 - Power BI or Databricks SQL Dashboard for the presentation layer
 
 ## Infrastructure as Code (Terraform)
 
-Azure resources (networking, the Postgres Flexible Server, and the Airbyte VM)
-are provisioned with Terraform (`azurerm` provider) instead of clicked together
-manually — reproducible, versioned in git, and easy to rebuild from scratch.
+Azure resources (Postgres Flexible Server, Data Factory, ADLS Gen2 landing storage) are
+provisioned with Terraform (`azurerm` provider) instead of clicked together manually —
+reproducible, versioned in git, and easy to rebuild from scratch.
 
 - **State backend**: remote state in an Azure Storage Account (Blob container),
   not a local `.tfstate` file — keeps state off the disk-constrained dev machine
   and fits the "always free" Blob Storage tier (5 GB LRS).
 - **Free-tier guardrails**: the Postgres SKU (Burstable B1ms) is pinned as a
-  variable default to stay free-tier. The VM SKU is **not** free-tier - all
-  three free-tier burstable sizes (B1s/B2pts_v2/B2ats_v2) cap at 1GB RAM,
-  which isn't enough for `abctl`'s Kubernetes control plane (see "Status" for
-  what this actually took to discover). Running `Standard_D2as_v7` (2 vCPU/
-  8GB) instead, at real cost.
-- **Postgres and the VM live in different regions** (`location` vs.
-  `vm_location` variables) - they only talk over Postgres's public endpoint,
-  no VNet peering, so there's no need to co-locate them. This split exists
-  because this subscription (a Free Trial) has its own per-region,
-  per-SKU allow-list - a size/region combo that fails isn't necessarily a
-  transient capacity issue. Check what's actually allowed before assuming a
-  size will work:
-  `az rest --method get --url "https://management.azure.com/subscriptions/<id>/providers/Microsoft.Compute/skus?api-version=2021-07-01&\$filter=location eq '<region>'"`
-  and look for VM SKUs with an empty `restrictions` array (`az vm list-skus`
-  works too but is far slower in practice).
+  variable default to stay free-tier.
 - **Two-stage apply**:
-  1. `infra/terraform/platform` — VNet/subnet/NSG, the Postgres Flexible Server,
-     and the Airbyte VM. Cloud-init on the VM installs Docker (and the Compose
-     plugin, unused by Airbyte itself but handy for ad-hoc container work);
-     `infra/airbyte/install.sh` then installs `abctl` and runs
-     `abctl local install --low-resource-mode --chart-version 1.8.5
-     --insecure-cookies`, which stands up Airbyte via a `kind` Kubernetes
-     cluster on port 8000. The chart version and cookie flag aren't
-     optional - see "Status" for why.
-  2. `infra/terraform/airbyte-config` — once Airbyte is reachable at the VM's
-     IP (stage 1 output), uses the official Airbyte Terraform provider to
-     declare the Postgres source connector, Databricks Lakehouse destination
-     connector, and the connection between them as code instead of manual UI
-     clicks. Kept as a separate stage/state because it depends on stage 1
-     already being applied and Airbyte being up. The provider's
-     `client_id`/`client_secret`/`token_url` auth doesn't work against this
-     self-hosted instance (a 401 - the OAuth2 flow it sends doesn't match
-     what this instance's custom token endpoint needs); use `bearer_auth`
-     instead with a token from `get_token.sh`, run fresh (~15 min expiry)
-     immediately before every plan/apply.
-- **Secrets**: Postgres admin password, VM SSH key, etc. passed via `TF_VAR_*`
-  env vars or a gitignored `terraform.tfvars` — never committed, same pattern
-  as the existing `.env` files.
-- **On/off**: `terraform apply`/`destroy` control whether resources *exist*,
-  but destroying and recreating the VM re-triggers the whole Airbyte install.
-  For day-to-day toggling without losing that setup, a small script
-  (`infra/terraform/toggle.sh`) wraps `az postgres flexible-server stop/start`
-  and `az vm deallocate/start` against the resources Terraform created.
+  1. `infra/terraform/platform` — the Postgres Flexible Server. Firewall rules:
+     the dev machine's admin IP (for `load_csvs.py`/psql), plus Azure's documented
+     "allow access from Azure services" sentinel rule (`0.0.0.0`/`0.0.0.0`), since
+     ADF's default Azure Integration Runtime has no fixed outbound IP to scope a
+     rule to.
+  2. `infra/terraform/data-factory` — the Data Factory instance, its Postgres and
+     ADLS Gen2 linked services, the landing storage account, the Copy pipeline, and
+     a Databricks access connector (for the notebook side's Unity Catalog external
+     location - see "Architecture"). Reads `postgres_fqdn` from stage 1's remote
+     state. Simpler dependency than the old Airbyte setup: no bootstrap
+     chicken-and-egg, just a plain `terraform_remote_state` read.
+- **ADF-specific gotchas worth remembering**:
+  - Use `azurerm_data_factory_linked_custom_service` (type `PostgreSqlV2`) for the
+    Postgres linked service, not the typed `azurerm_data_factory_linked_service_postgresql`
+    resource — that resource has a confirmed open provider bug
+    (hashicorp/terraform-provider-azurerm#22890) that silently ignores SSL
+    parameters and always connects with `EncryptionMethod=0`, which a Flexible
+    Server (SSL-enforced by default) rejects.
+  - Hyphens in ADF object names (datasets/linked services/pipelines) break the
+    platform's own internal runtime-variable composition for parameterized Copy
+    activities (`InvalidTemplate ... character 'p' at position 45 is not
+    expected`) — use underscores instead.
+  - `azurerm_data_factory_linked_custom_service` can silently drop fields (e.g.
+    `authenticationType`) from `type_properties_json` on `apply`, with `terraform
+    plan` showing no drift afterward — if a required property error persists
+    despite it being present in config, check the live resource via `az rest`
+    against the ADF REST API directly; a direct `PUT` may be needed to actually
+    persist it.
+  - `azurerm_data_factory_dataset_parquet` sends `compressionCodec` as an empty
+    string if `compression_codec` isn't set explicitly, which the Parquet sink
+    rejects outright rather than treating as "no compression" — set it explicitly
+    (e.g. `"snappy"`).
+- **Secrets**: Postgres admin password etc. passed via `TF_VAR_*` env vars or a
+  gitignored `terraform.tfvars` — never committed, same pattern as the existing
+  `.env` files.
+- **On/off**: `terraform apply`/`destroy` control whether resources *exist*. For
+  day-to-day toggling, `infra/terraform/platform/toggle.sh` wraps `az postgres
+  flexible-server stop/start` — there's no VM to toggle anymore, since ADF is
+  fully managed and Data Factory itself isn't billed per-hour.
 
 ## Architecture: Source → Ingestion → Bronze → Silver → Gold
 
@@ -125,14 +122,19 @@ for PostgreSQL – Flexible Server (database `credit_origination_db`):
 `credit_card_balance`. Represents the real transactional system this data would
 normally come from.
 
-**Ingestion (Airbyte)** — Airbyte (self-hosted on a small Azure VM) connection:
-Postgres source → Databricks Lakehouse destination. Each sync extracts the 8
-tables and writes them directly as Delta tables in the `bronze` schema - no
-intermediate file landing step.
+**Ingestion (Azure Data Factory)** — one pipeline, one `ForEach` activity
+(sequential) wrapping a parameterized Copy Activity: reads each of the 8 Postgres
+tables and writes them as Parquet into a dedicated ADLS Gen2 storage account's
+`landing` filesystem, one folder per table (`landing/<table>/part-0000.parquet`).
 
-**Bronze (landing zone)** — the 8 tables as Airbyte wrote them, with no
-additional transformation — a mirror of the Postgres tables, materialized
-directly as Delta tables by the destination connector.
+**Bronze (landing zone)** — a Databricks notebook per table
+(`notebooks/bronze/<table>.py`) reads that table's Parquet folder and writes it
+into Unity Catalog's `bronze` schema as a Delta table via `saveAsTable(...,
+mode="overwrite")` — a full overwrite each run, not incremental/merge, since
+there's no CDC/incremental state to track (see "Future enhancements"). A
+Databricks Job (`bronze_ingestion`) runs `00_setup.sql` first, then all 8
+per-table notebooks in parallel (independent of each other, only depending on
+setup).
 
 **Silver (cleaned + conformed)** — null handling, type standardization (dates,
 categoricals), de-duplication, referential integrity checks across tables (e.g. every
@@ -152,17 +154,20 @@ delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
 ## Repo layout
 
 - `/infra/terraform` — Terraform config provisioning the Postgres Flexible
-  Server, networking, the Airbyte VM, and Airbyte's connector config; see
-  "Infrastructure as Code" for the module breakdown
+  Server and the Data Factory/landing storage; see "Infrastructure as Code" for
+  the module breakdown
 - `/infra/postgres` — the load script that creates `credit_origination_db` and
   loads the 8 CSVs as tables (the server itself is Terraform-provisioned)
-- `/infra/airbyte` — `install.sh` installing `abctl` and running
-  `abctl local install` for self-hosted Airbyte (the VM itself is
-  Terraform-provisioned)
-- `/notebooks` — PySpark notebooks, run in order: `00_setup.sql`,
-  `01_silver_transform.py`, `02_gold_aggregation.py`, `03_quality_checks.py`.
-  No separate Bronze ingestion notebook - Airbyte's Databricks destination
-  connector writes Bronze directly as Delta tables
+- `/notebooks` — PySpark notebooks:
+  - `00_setup.sql` — Unity Catalog schema creation
+  - `bronze/<table>.py` × 8 — one notebook per table, reads that table's Parquet
+    from the ADF landing zone and writes it into `bronze` as Delta (see
+    "Architecture"). Deliberately 8 separate files rather than one script
+    looping over all 8 tables — explicit, separate task boundaries per table in
+    the Databricks Job, at the cost of near-identical code duplicated across
+    files
+  - `01_silver_transform.py`, `02_gold_aggregation.py`, `03_quality_checks.py` —
+    operate on the whole layer at once, so they stay single notebooks
 - `/src` — shared PySpark logic (schema definitions, aggregation functions, quality
   check helpers) factored out of the notebooks
 - `/docs` — architecture diagram, ER diagram for the star schema, design notes
@@ -215,9 +220,11 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 ## Conventions
 
 - Notebooks are numbered and run top-to-bottom; the full pipeline (bronze → gold)
-  should run from a single orchestrated entry point.
+  should run from a single orchestrated entry point (the Databricks Job).
 - Keep transformation logic testable: prefer functions in `/src` over inline notebook
-  cells when logic is reused across notebooks.
+  cells when logic is reused across notebooks — except the 8 per-table Bronze
+  notebooks, which are deliberately kept separate/explicit rather than
+  abstracted into a shared loop or helper (see "Repo layout").
 - Table/column naming stays in the source dataset's original casing
   (e.g. `SK_ID_CURR`, `AMT_INCOME_TOTAL`) for traceability back to the raw CSVs.
 
@@ -229,13 +236,6 @@ just "how do I actually run the next command."
 - **Tools live in `~/.local/bin`, not on PATH by default** - `uv`, `terraform`,
   `gh`, `az`, `databricks` were all installed there (no sudo on this machine).
   Every fresh shell needs `export PATH="$HOME/.local/bin:$PATH"` first.
-- **VM SSH key**: `~/.ssh/consumer-lending-airbyte-vm` (outside the repo, not
-  gitignored because it doesn't need to be - it's just not in the repo at
-  all). `ssh -i ~/.ssh/consumer-lending-airbyte-vm azureuser@<vm-ip>`.
-- **The VM's public IP is dynamic** - it's changed three times already across
-  region/size moves. Get the current one from
-  `terraform output airbyte_vm_public_ip` in `infra/terraform/platform`;
-  don't assume a previously-known IP is still current.
 - **Real secrets already exist on disk, gitignored** - don't ask "what's the
   password," read the file:
   - `infra/terraform/.env` - `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/
@@ -243,40 +243,32 @@ just "how do I actually run the next command."
     sourced before every `terraform` command in both stages.
   - `infra/terraform/platform/terraform.tfvars` - Postgres admin password,
     admin IP.
-  - `infra/terraform/airbyte-config/terraform.tfvars` - Databricks
-    client_id/secret. Airbyte client_id/secret are also here but only used by
-    `get_token.sh`, not the provider directly (see "Infrastructure as Code").
+  - `infra/terraform/data-factory/terraform.tfvars` - landing storage account
+    name, Postgres admin password (must match platform's).
   - `~/.databrickscfg` - a Databricks PAT for the `databricks` CLI (SQL
-    grants, warehouse start/stop). Lives on the dev machine, not the VM.
-- **`get_token.sh` needs three env vars exported first, then eval'd**:
-  ```
-  export AIRBYTE_CLIENT_ID="..."     # from terraform.tfvars
-  export AIRBYTE_CLIENT_SECRET="..." # from terraform.tfvars
-  export AIRBYTE_VM_IP="..."         # from terraform output
-  eval "$(./get_token.sh)"           # sets TF_VAR_airbyte_bearer_token
-  ```
+    grants, warehouse start/stop, Job runs).
 - **`az`/`gh`/`databricks` auth were all set up interactively** (browser
   device-code flows) - if a fresh session hits auth errors from any of them,
   that's expected; these can't be restarted programmatically. Ask the user to
   re-run `az login` / `gh auth login`, or regenerate the Databricks PAT.
 
 **Resuming work, in order:**
-1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes;
-   both Postgres and the VM need to actually come up.
-2. If the VM was *recreated* (not just restarted) since the last session, its
-   IP changed - run a plain `terraform apply` in `platform` to reconcile the
-   Postgres firewall rule to the new IP.
-3. Get a fresh Airbyte bearer token (`get_token.sh`, above) before touching
-   `infra/terraform/airbyte-config` - the previous one expired in ~15 minutes.
-4. `terraform plan` in `airbyte-config` to check for drift before assuming
-   the source/destination/connection are still intact.
+1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes
+   for Postgres to actually come up.
+2. `terraform plan` in both `platform` and `data-factory` to check for drift
+   before assuming everything's still intact.
+3. Trigger the ADF pipeline (`az rest ... /pipelines/copy_postgres_to_landing/createRun`)
+   and the Databricks Job (`databricks jobs run-now <job_id>`) as needed - both
+   are manually triggered, no schedule, since Postgres is stopped between
+   sessions.
 
 ## Completion criteria
 
 - PostgreSQL running on Azure (Flexible Server, free-tier) with the 8 tables loaded,
   simulating the transactional source.
-- Airbyte configured and syncing successfully from Postgres to Databricks
-  Unity Catalog's `bronze` schema.
+- Azure Data Factory pipeline landing all 8 tables as Parquet in ADLS Gen2, and
+  Databricks notebooks loading them into Unity Catalog's `bronze` schema as Delta
+  tables - **done**, verified end-to-end (see "Status").
 - Pipeline runs end-to-end (bronze → gold) from a single command/orchestrated notebook.
 - Star schema documented with an ER diagram.
 - Power BI dashboard published with at least 3 visualizations answering the business
@@ -289,11 +281,13 @@ just "how do I actually run the next command."
 
 Not part of the current build - revisit once the pipeline works end-to-end:
 
-- **CDC from Postgres to Databricks** — replace Airbyte's Xmin-based
-  incremental replication with true Change Data Capture (logical replication
-  slot + publication on Postgres, Debezium under the hood via Airbyte). More
-  realistic for a live origination system, and a stronger signal of the CDC
-  skill for senior data engineering roles.
+- **CDC from Postgres to Databricks** — true Change Data Capture (logical
+  replication slot + publication on Postgres) instead of ADF's current full
+  Copy-Activity pull each run. More realistic for a live origination system,
+  and a stronger signal of the CDC skill for senior data engineering roles.
+  ADF supports CDC via a dedicated Mapping Data Flow/CDC capability; would
+  also need the Bronze notebooks to switch from full-overwrite to
+  incremental-append/merge.
 - **Simulate ongoing originations** — a small script that periodically
   inserts/updates rows in Postgres (new applications, updated
   `previous_application` rows, etc.). The CSVs are a one-time historical
@@ -302,220 +296,52 @@ Not part of the current build - revisit once the pipeline works end-to-end:
 
 ## Status
 
-Unity Catalog is fully wired up (metastore, storage credential, external location,
-catalog `consumer_lending_risk_lakehouse` with `bronze`/`silver`/`gold` schemas
-created). The 8 CSVs were uploaded directly to a Volume
-(`bronze.raw_files`) as a bypassed intermediate step — under the new architecture,
-Airbyte's Databricks Lakehouse destination connector writes Bronze directly as
-Delta tables, not that direct upload.
+**Airbyte was tried first and abandoned.** Self-hosted Airbyte (via `abctl` on a
+dedicated Azure VM) got fully working end-to-end - webapp, Postgres source,
+Databricks Lakehouse destination connector all functional, after resolving several
+real infrastructure bugs (a `kind`/Kubernetes pod-networking NAT issue, an `abctl`
+Helm chart pinning issue, a missing stream-selection config). It was ultimately
+abandoned because sync jobs reliably OOM-killed on any table larger than ~50K rows,
+and three separate attempts to raise the effective container memory limit
+(a Terraform actor-level override, the platform's Kubernetes ConfigMap, restarting
+the components that read it) all failed to change what the actual sync pod launched
+with — the real lever was never found. Only `application_test` (the smallest table)
+ever synced successfully. Full troubleshooting detail lives in the git history of
+the now-merged `bugfix/kind-pod-cidr-route`, `bugfix/airbyte-connection-stream-config`,
+and `feature/adf-terraform-module`/`feature/bronze-ingestion-notebook` branches, not
+repeated here.
 
-Postgres was stood up locally via Docker first and loaded with all 8 tables as a
-first pass (`infra/postgres/load_csvs.py`); the local container, image, and volume
-have since been removed. The project has since moved that source to Azure Database
-for PostgreSQL – Flexible Server (see "Simulated source system" for why), with
-Terraform provisioning it and the Airbyte VM (see "Infrastructure as Code").
+**Current architecture (Azure Data Factory) is built and verified working
+end-to-end.** `infra/terraform/platform` provisions Postgres; `infra/terraform/data-factory`
+provisions the Data Factory instance, the ADLS Gen2 landing storage account
+(`streditorigination01`), the Copy pipeline, and a Databricks access connector.
+A manually-created Unity Catalog storage credential + external location
+(matching this project's existing manual-Databricks-setup pattern - no
+`databricks` Terraform provider in this repo) lets the Bronze notebooks read the
+landing zone. The ingestion service principal (`sp-airbyte-bronze-ingestion` -
+attempts to rename it away from that stale name failed silently via the
+Databricks API, likely because it's Azure AD-backed and its display name is
+controlled there) was re-granted for the new role: dropped `CREATE_VOLUME`
+(Airbyte-only), added `READ_FILES` on the new external location.
 
-The `infra/terraform/platform` module is applied and live: the Postgres Flexible
-Server (`credit-origination-pg-01`, `centralus`) has all 8 tables loaded, and
-Airbyte is installed and running on the VM (`Standard_D2as_v7`, `eastus2`) via
-`abctl`, pinned to chart `1.8.5` with `--insecure-cookies` (see below for why) -
-the web UI fully works: login succeeds and every workspace page (Sources,
-Destinations, Connections, Settings) renders correctly. Credentials are
-retrievable via `abctl local credentials`.
+Verified end-to-end: the ADF pipeline landed all 8 tables as Parquet in ~9
+minutes (including the ~13.6M-row `installments_payments` table Airbyte never
+got remotely close to), and the `bronze_ingestion` Databricks Job (9 tasks - one
+per table, plus `00_setup` - all succeeding in parallel) loaded all 8 into
+`consumer_lending_risk_lakehouse.bronze` with row counts matching the known
+Home Credit dataset sizes exactly (e.g. `bureau_balance` = 27,299,925,
+`installments_payments` = 13,605,401).
 
-`infra/terraform/airbyte-config` is also applied and live: the Postgres source,
-the Databricks Lakehouse destination, and the connection between them
-(`Credit Origination -> Bronze`) all exist in Airbyte, and both connectors'
-`check_connection` calls succeed. Originally planned as an Azure Blob
-Storage/ADLS Gen2 destination landing Parquet - changed after discovering
-Airbyte's Azure Blob Storage connector only supports CSV/JSONL (no Parquet at
-all), and switching to the Databricks Lakehouse connector instead (writing
-Delta tables directly into Unity Catalog, no intermediate landing step) turned
-out simpler anyway.
+The Databricks Job currently runs as the creating user rather than the service
+principal - setting `run_as` to a service principal needs the account-level
+"Account Access Control Proxy" API, which needs account-admin auth not
+configured in this session; not worth the setup for a portfolio project where
+the SP's actual security-relevant role (governing data access via Unity Catalog
+grants) is unaffected either way.
 
-Both Postgres and the VM are currently **stopped** (`toggle.sh stop` / `az vm
-deallocate`) to avoid unnecessary cost - leave them off until asked to turn
-them back on. The VM is currently sized `Standard_D4as_v7` (bumped from the
-`D2as_v7` default while troubleshooting the OOM issue below) - a stopped/
-deallocated VM isn't billed for compute regardless of size, so there's no
-urgency to size it back down while it's off.
+Both Postgres and the Data Factory/storage are left as Terraform manages them;
+Postgres is stopped between sessions (`toggle.sh stop`) to avoid cost - there's
+no VM to stop anymore, since ADF is fully managed.
 
-Two bugfix PRs are open against `develop`, not yet merged:
-`bugfix/kind-pod-cidr-route` (PR #22) and
-`bugfix/airbyte-connection-stream-config` (PR #23) - see the new discoveries
-below for what each fixes.
-
-Getting both stages working took several rounds of discovering things the
-docs/quota checks didn't reveal upfront:
-
-- **Docker Compose deployment for Airbyte OSS was deprecated in August 2024.**
-  Only `abctl` (Kubernetes via `kind`, on Docker) is supported now - CLAUDE.md
-  originally committed to Docker Compose before this was discovered.
-- **All three free-tier VM sizes (B1s/B2pts_v2/B2ats_v2) cap at 1GB RAM** -
-  nowhere near enough for `abctl`'s Kubernetes control plane, even in
-  `--low-resource-mode`. The first real install attempt (on `B2pts_v2`, ARM)
-  failed after ~11 minutes with the control plane's healthz checks timing out.
-  This is a hard ceiling on the whole free-tier VM family, not a fluke.
-- **This subscription (Free Trial) has its own per-region, per-SKU allow-list**
-  that has nothing to do with quota - `Standard_B2s`, then `Standard_D2s_v3`,
-  both failed with `SkuNotAvailable`/capacity restrictions in `centralus`, and
-  `D2s_v3` failed in `eastus2` too, despite untouched quota for all of them.
-  Querying the Resource SKUs API directly (see "Infrastructure as Code") for
-  SKUs with an empty `restrictions` array found `Standard_D2as_v7`, which
-  worked immediately in `eastus2`.
-- Postgres and the VM ended up in different regions as a result (`location`
-  vs. `vm_location`) - fine, since they only talk over Postgres's public
-  endpoint.
-- **Airbyte's Azure Blob Storage destination connector only supports CSV or
-  JSONL** - no Parquet option exists, and no separate ADLS Gen2-specific
-  connector exists either (unlike "S3 Data Lake"/"GCS Data Lake" for other
-  clouds). Switched to the Databricks Lakehouse destination connector instead
-  (writes Delta tables directly into Unity Catalog - simpler than landing
-  files at all).
-- **Databricks Lakehouse destination setup**: reused the existing "Serverless
-  Starter Warehouse" (`9b1762275ab88f7f`) rather than creating a new one.
-  Created a dedicated service principal (`sp-airbyte-bronze-ingestion`,
-  application ID `fe2874b6-e710-4833-9576-bf8f0d973161`) via the Databricks
-  CLI rather than using a personal token, and granted it `USE CATALOG` on
-  `consumer_lending_risk_lakehouse` plus `USE SCHEMA`, `CREATE TABLE`,
-  `MODIFY`, `SELECT`, and `CREATE VOLUME` on the `bronze` schema (the last one
-  found only after the destination's `check_connection` failed with a clear
-  `PERMISSION_DENIED` on `CREATE VOLUME` - the connector uses a Unity Catalog
-  volume internally for staging).
-- **The Airbyte Terraform provider's OAuth2 auth
-  (`client_id`/`client_secret`/`token_url`) 401s against this self-hosted
-  instance** - it sends the token request without the content-type header
-  this instance's custom `/api/v1/applications/token` endpoint needs (a known
-  upstream issue, not specific to this setup). `bearer_auth` with a token
-  fetched directly works fine, but that token is short-lived (~15 min) - see
-  `get_token.sh` and `versions.tf`.
-- **The hardest bug**: after fixing auth, `airbyte_source`/`airbyte_connection`
-  creation failed with `SQL state 08001` ("connection attempt failed") -
-  immediately, in ~3ms, too fast to be a genuine network timeout. Node-level
-  connectivity tests (DNS, raw TCP, even a full SSL handshake, all run via
-  `docker exec` into the `airbyte-abctl-control-plane` container) succeeded
-  perfectly, which was misleading - `kind` pods use a *separate* pod-network
-  CNI (CIDR `10.244.0.0/24`) layered on top of the node's own Docker network,
-  and that CIDR had **no MASQUERADE rule** at all in the host's iptables,
-  discovered by testing from inside an actual scheduled Kubernetes pod
-  (`kubectl run` + `nc`) rather than the node container - DNS resolved fine
-  and TCP handshakes even completed from the node's perspective, but pod
-  traffic timed out trying to actually leave the VM. `kindnetd`'s initial
-  setup adds this rule once, but it's pure in-memory iptables state - it does
-  not survive a VM stop/start, and nothing re-adds it automatically on
-  restart. Fixed with a script + systemd oneshot service
-  (`fix-kind-pod-nat.sh` / `fix-kind-pod-nat.service`, baked into cloud-init
-  and also installed directly on the live VM) that re-adds the rule on every
-  boot, idempotently.
-- **The Airbyte webapp itself crashed on every workspace page** (Sources,
-  Destinations, Connections, even Settings) with `React error #185` ("Maximum
-  update depth exceeded") - reproducible even in incognito, so not a browser
-  cache issue. Tried and ruled out in order: the `initial_setup_complete` /
-  `display_setup_wizard` workspace flags (had to flip these directly in
-  Postgres too - `abctl`'s bootstrap doesn't set them, and the normal setup
-  wizard couldn't complete because of this same crash, a chicken-and-egg
-  problem), a missing `workspace_admin` permission row for the default user,
-  and the `AIRBYTE_URL` ConfigMap value being stuck at `localhost:8000`
-  instead of the VM's actual address. None of it fixed the crash. Turned out
-  to be a confirmed **upstream bug** (`airbytehq/airbyte#76834`, filed against
-  `2.1.0`, closed only via a private internal ticket) - and the real root
-  cause: **`abctl`'s "latest" currently resolves to an alpha-tagged Helm chart**
-  (`1.9.x`+, whose `appVersion` strings all contain `-alpha-`, even though the
-  app itself reports a clean version like `2.1.1`). The actual last stable
-  chart is `1.8.5` (also its own `appVersion` - the two diverged after that).
-  Fixed by uninstalling, deleting the stale `~/.airbyte/abctl/data/` volume
-  directories (`abctl local uninstall` doesn't clean these up, and they carry
-  over an incompatible Postgres data directory across versions), and
-  reinstalling with `--chart-version 1.8.5`. That alone surfaced a second,
-  separate issue - login succeeded but no session cookie was set ("you appear
-  to have deployed over HTTP") - fixed with `--insecure-cookies` (also
-  required a full reinstall to apply; no `helm` CLI is available on the VM to
-  patch it in place). A fresh install means a new workspace ID and new
-  `abctl local credentials` - the Postgres source, Databricks destination,
-  and connection all had to be recreated via `terraform state rm` +
-  `apply` once the new credentials were in `terraform.tfvars`.
-- **Attempting the first real sync surfaced three more distinct bugs**,
-  found in this order:
-  1. `airbyte_connection.postgres_to_databricks` never set
-     `configurations.streams` - Airbyte treated the connection as zero
-     streams selected, so every sync failed at the destination step with
-     "The catalog contained no streams." Fixed in PR #23 by listing all 8
-     tables with `sync_mode = incremental_append`.
-  2. The Databricks service principal only had `USE_CATALOG` on
-     `consumer_lending_risk_lakehouse` - once streams were configured, the
-     destination's `CREATE SCHEMA` for its internal staging schema
-     (`airbyte_internal`, used for typing/deduping raw data) failed with
-     `PERMISSION_DENIED`. Fixed by granting `CREATE_SCHEMA` on the catalog
-     too (separate from the `bronze`-schema grants already in place).
-  3. A sync attempt right after a VM restart failed fast with a
-     source-side `HikariPool ... connection timed out`, even with the
-     existing pod-NAT fix service running. tcpdump on the VM's NIC showed
-     Postgres replying with SYN-ACK just fine, but the host had **no route**
-     for the pod CIDR (`10.244.0.0/24`) to deliver that reply back through
-     the `kind` bridge to the node container - it fell through to the
-     default route instead, so the handshake never completed. Same class of
-     bug as the MASQUERADE rule (ephemeral kernel state, doesn't survive a
-     VM stop/start) but a different piece of state. Fixed in PR #22 by
-     having `fix-kind-pod-nat.sh` also restore this route.
-- **Resizing the VM to get more headroom forced a full destroy+recreate**,
-  not an in-place resize - changing `vm_size` also happened to pick up a
-  real, previously-undiscovered bug in the checked-in `cloud-init.yaml`:
-  `fix-kind-pod-nat.sh` used bash's `${BRIDGE}` syntax, which collides with
-  Terraform's own `templatefile()` `${...}` interpolation ("vars map does
-  not contain key BRIDGE" on every plan touching that resource). Since
-  `custom_data` is `ForceNew` for `azurerm_linux_virtual_machine`, fixing it
-  forced the VM to be replaced. Fixed by escaping it as `$${BRIDGE}` (PR
-  #22). A full VM recreate also means: new host SSH key (expected, not a
-  MITM warning), a fresh `abctl` install, a new default Airbyte workspace ID
-  (`variables.tf`'s `airbyte_workspace_id` default updated in PR #23), and
-  the same "recreate source/destination/connection via `terraform state rm`
-  + `apply`" dance as prior reinstalls.
-- **`fix-kind-pod-nat.service` only helps on a VM stop/start, not a fresh
-  VM create** - discovered while testing the above recreate: the service
-  fires at `docker.service`-start time, before `abctl local install` has
-  even created the `kind` cluster, so its 5-minute retry budget always
-  expires first on a truly fresh VM. On a stop/start, the cluster already
-  exists on disk from the prior boot and comes back fast enough. Fixed in
-  PR #22 by having `infra/airbyte/install.sh` trigger the service explicitly
-  right after `abctl local install` completes.
-- **Current blocker, unresolved**: sync jobs OOMKill well before completing
-  even moderately-sized tables. Only `application_test` (48,744 rows, single
-  stream) has synced successfully and landed correctly in
-  `consumer_lending_risk_lakehouse.bronze` (verified row count matches
-  exactly). `application_train` (307,511 rows, single stream) OOMKilled
-  across 3 retry attempts; syncing 2 streams at once OOMKilled the
-  *destination* container in 31 seconds. The default Kubernetes container
-  memory limit for sync job pods is `4Gi` (`JOB_MAIN_CONTAINER_MEMORY_LIMIT`
-  in the `airbyte-abctl-airbyte-env` ConfigMap) - three different attempts
-  to raise the effective limit all failed to change what the actual sync
-  pod launches with:
-  1. Setting `resource_allocation.default.memory_limit` on the Terraform
-     `airbyte_source` resource - applied without error, had no visible
-     effect on the job pod's limit.
-  2. Patching `JOB_MAIN_CONTAINER_MEMORY_LIMIT` to `10Gi` in the ConfigMap
-     and restarting `airbyte-abctl-workload-launcher` - confirmed via
-     `kubectl exec ... env` that the new pod has `10Gi` in its own
-     environment, but spawned sync pods still show `4Gi`.
-  3. Also restarting `airbyte-abctl-worker` (which also reads this
-     ConfigMap and, per its name, is a more likely candidate for actually
-     submitting job resource specs) - same result, sync pods still `4Gi`.
-  The actual mechanism that sets the replication pod's resource limits
-  hasn't been found yet - it isn't a live env-var read by either
-  `workload-launcher` or `worker` at job-submission time, at least not in a
-  way a deployment restart picks up. Given the time already spent, the
-  decision was to stop investigating the root cause for now and accept a
-  partial Bronze load (`application_test` only) - `connection.tf`'s
-  `bronze_tables` local was used as a one-table-at-a-time diagnostic tool
-  during this investigation but is restored to the full 8-table list as the
-  intended long-term config, so `terraform plan` shows no drift once
-  resumed.
-
-Next: find the real lever controlling sync job pod resource limits (leads to
-chase: Airbyte's internal Postgres metadata DB for a persisted per-connector
-resource spec, a different/newer connector version, or an entirely different
-ingestion approach - e.g. landing Parquet in Blob/ADLS Gen2 again and loading
-via a Databricks notebook, sidestepping the Lakehouse connector's staging
-behavior entirely). Once sync is reliable for all 8 tables, verify they land
-correctly in `consumer_lending_risk_lakehouse.bronze`, then write
-`01_silver_transform.py`. Estimated 2-3 weeks at 5-8h/week (already running
-longer given the added ingestion layer and the troubleshooting above).
+Next: write `01_silver_transform.py`. Estimated 2-3 weeks at 5-8h/week (already
+running longer given the ingestion-layer detour and rebuild).
