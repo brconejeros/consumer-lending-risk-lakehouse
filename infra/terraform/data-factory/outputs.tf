@@ -17,3 +17,8 @@ output "pipeline_name" {
   description = "Name of the Postgres -> landing Parquet pipeline (for az datafactory pipeline create-run)"
   value       = azurerm_data_factory_pipeline.bronze_landing.name
 }
+
+output "databricks_access_connector_id" {
+  description = "Resource ID of the access connector - needed for CREATE STORAGE CREDENTIAL in Unity Catalog"
+  value       = azurerm_databricks_access_connector.landing.id
+}
