@@ -12,16 +12,24 @@ write_files:
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
-      # kind's pod-network MASQUERADE rule lives only in the host's in-memory
-      # iptables state - it does not survive a VM stop/start (the VM's own
-      # NAT rules for the two Docker bridge networks get re-added by Docker
-      # itself on boot, but nothing re-adds the pod CIDR's rule). Without it,
-      # pods can resolve DNS and even complete a TCP handshake to the node's
-      # own IP, but any real outbound connection from *inside* a pod times
-      # out - a genuinely confusing failure mode since node-level connectivity
-      # tests all pass fine. Discovered by comparing a raw TCP test from
-      # inside the kind node container (worked) against the same test from
-      # inside an actual scheduled pod (timed out).
+      # kind's pod-network MASQUERADE rule and return route live only in the
+      # host's in-memory netfilter/routing state - neither survives a VM
+      # stop/start (the VM's own NAT rules for the two Docker bridge networks
+      # get re-added by Docker itself on boot, but nothing re-adds these).
+      # Without the MASQUERADE rule, pods can resolve DNS and even complete a
+      # TCP handshake to the node's own IP, but any real outbound connection
+      # from *inside* a pod times out - a genuinely confusing failure mode
+      # since node-level connectivity tests all pass fine. Discovered by
+      # comparing a raw TCP test from inside the kind node container (worked)
+      # against the same test from inside an actual scheduled pod (timed
+      # out).
+      # Without the return route, outbound SYNs get masqueraded and reach
+      # the destination fine (confirmed via tcpdump - the destination even
+      # replies with SYN-ACK), but the host has no route for the pod CIDR to
+      # deliver that reply back through the bridge to the node container, so
+      # it falls through to the default route instead and the handshake
+      # never completes - pods retransmit SYNs forever. Airbyte syncs failed
+      # with a source-side "HikariPool ... connection timed out" as a result.
       # Waiting for the Docker container alone isn't enough - it can show
       # "running" well before the Kubernetes API server inside it is ready
       # to accept kubectl calls, especially on a cold VM boot. Retry the
@@ -37,7 +45,8 @@ write_files:
 
       POD_CIDR=$(docker exec airbyte-abctl-control-plane kubectl get node airbyte-abctl-control-plane -o jsonpath='{.spec.podCIDR}')
       BRIDGE=$(docker network inspect kind --format '{{.Id}}' | cut -c1-12)
-      BRIDGE="br-${BRIDGE}"
+      BRIDGE="br-$${BRIDGE}"
+      NODE_IP=$(docker network inspect kind --format '{{range .Containers}}{{.IPv4Address}}{{end}}' | cut -d/ -f1)
 
       if [ -z "$POD_CIDR" ]; then
         echo "Timed out waiting for the Kubernetes API server to become ready" >&2
@@ -46,6 +55,10 @@ write_files:
 
       if ! iptables -t nat -C POSTROUTING -s "$POD_CIDR" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s "$POD_CIDR" ! -o "$BRIDGE" -j MASQUERADE
+      fi
+
+      if [ -n "$NODE_IP" ] && ! ip route show "$POD_CIDR" | grep -q .; then
+        ip route add "$POD_CIDR" via "$NODE_IP" dev "$BRIDGE"
       fi
   - path: /etc/systemd/system/fix-kind-pod-nat.service
     permissions: "0644"
