@@ -25,6 +25,16 @@ set -euo pipefail
 curl -LsfS https://get.airbyte.com | bash -
 abctl local install --low-resource-mode --no-browser --chart-version 1.8.5 --insecure-cookies
 
+# fix-kind-pod-nat.service (see cloud-init.yaml) only helps on a VM
+# stop/start, where the kind cluster already exists on disk and comes back
+# fast enough for its 5-minute retry budget. On a genuinely fresh VM, the
+# service fires at Docker-service-start time - before `abctl local install`
+# above has even created the cluster - and its retries time out long before
+# this line runs. Trigger it explicitly now that the cluster definitely
+# exists, so pod egress (needed for the Postgres source check) works on the
+# very first sync attempt instead of requiring a manual re-run.
+sudo systemctl start fix-kind-pod-nat.service
+
 # abctl doesn't have a flag to set this for a bare IP host (--host rejects
 # IP addresses) - patch it directly, then restart the server pod to pick it
 # up. Without this, instance_configuration.airbyteUrl stays

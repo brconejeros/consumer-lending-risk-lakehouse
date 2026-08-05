@@ -45,7 +45,7 @@ write_files:
 
       POD_CIDR=$(docker exec airbyte-abctl-control-plane kubectl get node airbyte-abctl-control-plane -o jsonpath='{.spec.podCIDR}')
       BRIDGE=$(docker network inspect kind --format '{{.Id}}' | cut -c1-12)
-      BRIDGE="br-${BRIDGE}"
+      BRIDGE="br-$${BRIDGE}"
       NODE_IP=$(docker network inspect kind --format '{{range .Containers}}{{.IPv4Address}}{{end}}' | cut -d/ -f1)
 
       if [ -z "$POD_CIDR" ]; then
