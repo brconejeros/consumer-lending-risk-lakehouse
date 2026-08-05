@@ -335,7 +335,15 @@ out simpler anyway.
 
 Both Postgres and the VM are currently **stopped** (`toggle.sh stop` / `az vm
 deallocate`) to avoid unnecessary cost - leave them off until asked to turn
-them back on.
+them back on. The VM is currently sized `Standard_D4as_v7` (bumped from the
+`D2as_v7` default while troubleshooting the OOM issue below) - a stopped/
+deallocated VM isn't billed for compute regardless of size, so there's no
+urgency to size it back down while it's off.
+
+Two bugfix PRs are open against `develop`, not yet merged:
+`bugfix/kind-pod-cidr-route` (PR #22) and
+`bugfix/airbyte-connection-stream-config` (PR #23) - see the new discoveries
+below for what each fixes.
 
 Getting both stages working took several rounds of discovering things the
 docs/quota checks didn't reveal upfront:
@@ -426,9 +434,88 @@ docs/quota checks didn't reveal upfront:
   `abctl local credentials` - the Postgres source, Databricks destination,
   and connection all had to be recreated via `terraform state rm` +
   `apply` once the new credentials were in `terraform.tfvars`.
+- **Attempting the first real sync surfaced three more distinct bugs**,
+  found in this order:
+  1. `airbyte_connection.postgres_to_databricks` never set
+     `configurations.streams` - Airbyte treated the connection as zero
+     streams selected, so every sync failed at the destination step with
+     "The catalog contained no streams." Fixed in PR #23 by listing all 8
+     tables with `sync_mode = incremental_append`.
+  2. The Databricks service principal only had `USE_CATALOG` on
+     `consumer_lending_risk_lakehouse` - once streams were configured, the
+     destination's `CREATE SCHEMA` for its internal staging schema
+     (`airbyte_internal`, used for typing/deduping raw data) failed with
+     `PERMISSION_DENIED`. Fixed by granting `CREATE_SCHEMA` on the catalog
+     too (separate from the `bronze`-schema grants already in place).
+  3. A sync attempt right after a VM restart failed fast with a
+     source-side `HikariPool ... connection timed out`, even with the
+     existing pod-NAT fix service running. tcpdump on the VM's NIC showed
+     Postgres replying with SYN-ACK just fine, but the host had **no route**
+     for the pod CIDR (`10.244.0.0/24`) to deliver that reply back through
+     the `kind` bridge to the node container - it fell through to the
+     default route instead, so the handshake never completed. Same class of
+     bug as the MASQUERADE rule (ephemeral kernel state, doesn't survive a
+     VM stop/start) but a different piece of state. Fixed in PR #22 by
+     having `fix-kind-pod-nat.sh` also restore this route.
+- **Resizing the VM to get more headroom forced a full destroy+recreate**,
+  not an in-place resize - changing `vm_size` also happened to pick up a
+  real, previously-undiscovered bug in the checked-in `cloud-init.yaml`:
+  `fix-kind-pod-nat.sh` used bash's `${BRIDGE}` syntax, which collides with
+  Terraform's own `templatefile()` `${...}` interpolation ("vars map does
+  not contain key BRIDGE" on every plan touching that resource). Since
+  `custom_data` is `ForceNew` for `azurerm_linux_virtual_machine`, fixing it
+  forced the VM to be replaced. Fixed by escaping it as `$${BRIDGE}` (PR
+  #22). A full VM recreate also means: new host SSH key (expected, not a
+  MITM warning), a fresh `abctl` install, a new default Airbyte workspace ID
+  (`variables.tf`'s `airbyte_workspace_id` default updated in PR #23), and
+  the same "recreate source/destination/connection via `terraform state rm`
+  + `apply`" dance as prior reinstalls.
+- **`fix-kind-pod-nat.service` only helps on a VM stop/start, not a fresh
+  VM create** - discovered while testing the above recreate: the service
+  fires at `docker.service`-start time, before `abctl local install` has
+  even created the `kind` cluster, so its 5-minute retry budget always
+  expires first on a truly fresh VM. On a stop/start, the cluster already
+  exists on disk from the prior boot and comes back fast enough. Fixed in
+  PR #22 by having `infra/airbyte/install.sh` trigger the service explicitly
+  right after `abctl local install` completes.
+- **Current blocker, unresolved**: sync jobs OOMKill well before completing
+  even moderately-sized tables. Only `application_test` (48,744 rows, single
+  stream) has synced successfully and landed correctly in
+  `consumer_lending_risk_lakehouse.bronze` (verified row count matches
+  exactly). `application_train` (307,511 rows, single stream) OOMKilled
+  across 3 retry attempts; syncing 2 streams at once OOMKilled the
+  *destination* container in 31 seconds. The default Kubernetes container
+  memory limit for sync job pods is `4Gi` (`JOB_MAIN_CONTAINER_MEMORY_LIMIT`
+  in the `airbyte-abctl-airbyte-env` ConfigMap) - three different attempts
+  to raise the effective limit all failed to change what the actual sync
+  pod launches with:
+  1. Setting `resource_allocation.default.memory_limit` on the Terraform
+     `airbyte_source` resource - applied without error, had no visible
+     effect on the job pod's limit.
+  2. Patching `JOB_MAIN_CONTAINER_MEMORY_LIMIT` to `10Gi` in the ConfigMap
+     and restarting `airbyte-abctl-workload-launcher` - confirmed via
+     `kubectl exec ... env` that the new pod has `10Gi` in its own
+     environment, but spawned sync pods still show `4Gi`.
+  3. Also restarting `airbyte-abctl-worker` (which also reads this
+     ConfigMap and, per its name, is a more likely candidate for actually
+     submitting job resource specs) - same result, sync pods still `4Gi`.
+  The actual mechanism that sets the replication pod's resource limits
+  hasn't been found yet - it isn't a live env-var read by either
+  `workload-launcher` or `worker` at job-submission time, at least not in a
+  way a deployment restart picks up. Given the time already spent, the
+  decision was to stop investigating the root cause for now and accept a
+  partial Bronze load (`application_test` only) - `connection.tf`'s
+  `bronze_tables` local was used as a one-table-at-a-time diagnostic tool
+  during this investigation but is restored to the full 8-table list as the
+  intended long-term config, so `terraform plan` shows no drift once
+  resumed.
 
-Next: run an actual sync on the `Credit Origination -> Bronze` connection and
-verify the 8 tables land correctly as Delta tables in
-`consumer_lending_risk_lakehouse.bronze`, then write `01_silver_transform.py`.
-Estimated 2-3 weeks at 5-8h/week (already running longer given the added
-ingestion layer and the troubleshooting above).
+Next: find the real lever controlling sync job pod resource limits (leads to
+chase: Airbyte's internal Postgres metadata DB for a persisted per-connector
+resource spec, a different/newer connector version, or an entirely different
+ingestion approach - e.g. landing Parquet in Blob/ADLS Gen2 again and loading
+via a Databricks notebook, sidestepping the Lakehouse connector's staging
+behavior entirely). Once sync is reliable for all 8 tables, verify they land
+correctly in `consumer_lending_risk_lakehouse.bronze`, then write
+`01_silver_transform.py`. Estimated 2-3 weeks at 5-8h/week (already running
+longer given the added ingestion layer and the troubleshooting above).
