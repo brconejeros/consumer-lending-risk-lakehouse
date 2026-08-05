@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+# landing_storage_account_name and postgres_admin_password have no
+# defaults - required. landing_storage_account_name must be globally
+# unique across all of Azure (lowercase alphanumeric, <= 24 chars).
+
+landing_storage_account_name = "stcreditlanding01"
+postgres_admin_password      = "changeme"
