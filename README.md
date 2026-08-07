@@ -81,10 +81,10 @@ infra/terraform/  → Terraform: Postgres Flexible Server, Data Factory, ADLS Ge
 infra/postgres/   → CSV-load script (loads the 8 CSVs into Postgres as tables)
 notebooks/        → numbered pipeline notebooks, run in order
   00_setup.sql          → Unity Catalog schema creation
-  bronze/<table>.py     → one notebook per table, Parquet → Delta into bronze
+  bronze/<table>.py     → one notebook per table, instantiates BronzeIngestionJob
   01_silver_transform.py, 02_gold_aggregation.py, 03_quality_checks.py
-src/          → reusable PySpark logic (schemas, aggregations, quality checks)
-tests/        → unit tests for src/
+src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
+tests/        → unit tests for src/, run locally with pytest (no cluster needed)
 docs/         → architecture diagram, ER diagram for the star schema
 CLAUDE.md     → full project/architecture reference
 ```
