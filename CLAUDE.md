@@ -136,6 +136,11 @@ Databricks Job (`bronze_ingestion`) runs `00_setup.sql` first, then all 8
 per-table notebooks in parallel (independent of each other, only depending on
 setup).
 
+The read/write logic itself lives in one class, `BronzeIngestionJob`
+(`src/lakehouse/bronze.py`), not copy-pasted across the 8 notebooks — see
+"OOP ingestion framework (`src/lakehouse`)" below for why that's not the same
+thing as the shared-loop abstraction this project deliberately avoided.
+
 **Silver (cleaned + conformed)** — null handling, type standardization (dates,
 categoricals), de-duplication, referential integrity checks across tables (e.g. every
 `SK_ID_BUREAU` in `bureau_balance` must exist in `bureau`; every `SK_ID_PREV` in the
@@ -151,6 +156,38 @@ satellite tables must exist in `previous_application`).
 Each dimension is pre-aggregated to `SK_ID_CURR` grain (count, sum, mean, max of
 delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
 
+## OOP ingestion framework (`src/lakehouse`)
+
+The medallion layers share one template-method class hierarchy instead of
+each notebook hand-rolling its own read/transform/write sequence — the
+project's OOP showcase, and the reusable shape Silver/Gold will plug into
+next:
+
+- `LakehouseLayerJob` (`src/lakehouse/base.py`) — abstract base class (`abc.ABC`).
+  Defines `run()` as the fixed orchestration: `extract() -> transform() ->
+  validate() -> load()`. `extract`/`load` are `@abstractmethod`; `transform`/
+  `validate` default to no-ops so a layer that doesn't need them yet (Bronze,
+  today) can skip them without boilerplate overrides.
+- `BronzeIngestionJob(LakehouseLayerJob)` (`src/lakehouse/bronze.py`) —
+  implements `extract` (read the ADF landing-zone Parquet) and `load` (Delta
+  `saveAsTable(..., mode="overwrite")` into `bronze`), paired with a
+  `BronzeTableConfig` frozen dataclass that derives `landing_path` and
+  `target_table` from just a table name.
+- This resolves the tension with "Deliberately 8 separate files" below: the
+  **notebooks stay 8 separate files** (so the Databricks Job still gets 8
+  independent, parallel task boundaries) — they just each instantiate the
+  same `BronzeIngestionJob` with their own `BronzeTableConfig(table=...)`
+  instead of repeating the read/write cell. What's shared is the *class*, not
+  a loop driving all 8 tables from one script.
+- Silver/Gold will get their own `LakehouseLayerJob` subclasses
+  (`SilverTransformJob`, `GoldAggregationJob`, ...) overriding `transform`/
+  `validate` for null handling, dedup, FK checks, and star-schema
+  aggregation — same base class, same common libraries (`pyspark`, stdlib
+  `dataclasses`/`abc`/`logging`), no new dependency per layer.
+- Covered by `tests/test_base.py` and `tests/test_bronze.py`, run locally
+  against `pyspark` + `delta-spark` (no live cluster needed) — see "Working
+  locally" for the version pin this requires.
+
 ## Repo layout
 
 - `/infra/terraform` — Terraform config provisioning the Postgres Flexible
@@ -160,16 +197,21 @@ delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
   loads the 8 CSVs as tables (the server itself is Terraform-provisioned)
 - `/notebooks` — PySpark notebooks:
   - `00_setup.sql` — Unity Catalog schema creation
-  - `bronze/<table>.py` × 8 — one notebook per table, reads that table's Parquet
-    from the ADF landing zone and writes it into `bronze` as Delta (see
-    "Architecture"). Deliberately 8 separate files rather than one script
-    looping over all 8 tables — explicit, separate task boundaries per table in
-    the Databricks Job, at the cost of near-identical code duplicated across
-    files
+  - `bronze/<table>.py` × 8 — one notebook per table; each is a thin wrapper
+    that instantiates `BronzeIngestionJob` with that table's
+    `BronzeTableConfig` and calls `.run()` (see "OOP ingestion framework").
+    Deliberately 8 separate files rather than one script looping over all 8
+    tables — explicit, separate task boundaries per table in the Databricks
+    Job. The read/write logic itself is no longer duplicated across them;
+    only the per-table config line differs
   - `01_silver_transform.py`, `02_gold_aggregation.py`, `03_quality_checks.py` —
     operate on the whole layer at once, so they stay single notebooks
-- `/src` — shared PySpark logic (schema definitions, aggregation functions, quality
-  check helpers) factored out of the notebooks
+- `/src/lakehouse` — the `LakehouseLayerJob` class hierarchy shared across
+  medallion layers (schema definitions, aggregation functions, and quality
+  check helpers will land here too as Silver/Gold are built out) — see "OOP
+  ingestion framework"
+- `/tests` — unit tests for `/src`, run locally via `pytest` against a local
+  Spark + Delta session (no Databricks cluster required)
 - `/docs` — architecture diagram, ER diagram for the star schema, design notes
 - `README.md` — problem statement, architecture summary, how to run
 
@@ -221,10 +263,13 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 
 - Notebooks are numbered and run top-to-bottom; the full pipeline (bronze → gold)
   should run from a single orchestrated entry point (the Databricks Job).
-- Keep transformation logic testable: prefer functions in `/src` over inline notebook
-  cells when logic is reused across notebooks — except the 8 per-table Bronze
-  notebooks, which are deliberately kept separate/explicit rather than
-  abstracted into a shared loop or helper (see "Repo layout").
+- Keep transformation logic testable: prefer classes/functions in `/src` over
+  inline notebook cells when logic is reused across notebooks. This now
+  includes the 8 per-table Bronze notebooks too — they call the shared
+  `BronzeIngestionJob` class rather than duplicating read/write code, but stay
+  as 8 separate notebook *files* rather than being collapsed into one script
+  that loops over all 8 tables (see "OOP ingestion framework" and "Repo
+  layout").
 - Table/column naming stays in the source dataset's original casing
   (e.g. `SK_ID_CURR`, `AMT_INCOME_TOTAL`) for traceability back to the raw CSVs.
 
@@ -251,6 +296,16 @@ just "how do I actually run the next command."
   device-code flows) - if a fresh session hits auth errors from any of them,
   that's expected; these can't be restarted programmatically. Ask the user to
   re-run `az login` / `gh auth login`, or regenerate the Databricks PAT.
+- **`pyspark` is pinned to `==3.5.3`, not just `<3.6`** - newer 3.5.x patch
+  releases (verified broken: 3.5.9) fail every `delta-spark==3.2.1`
+  `saveAsTable(mode="overwrite")` locally with `AnalysisException: Table ...
+  does not support truncate in batch mode`, even for a brand-new table,
+  regardless of 2-part vs 3-part table name or `spark.sql.catalogImplementation`.
+  Doesn't affect the real pipeline (Databricks Runtime's own Delta/Unity
+  Catalog integration doesn't hit this), only local `pytest` runs against
+  `tests/conftest.py`'s local Spark+Delta session - if `uv add`/`uv sync`
+  ever bumps `pyspark` past `3.5.3`, re-pin it rather than debugging the
+  symptom.
 
 **Resuming work, in order:**
 1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes
@@ -343,5 +398,12 @@ Both Postgres and the Data Factory/storage are left as Terraform manages them;
 Postgres is stopped between sessions (`toggle.sh stop`) to avoid cost - there's
 no VM to stop anymore, since ADF is fully managed.
 
-Next: write `01_silver_transform.py`. Estimated 2-3 weeks at 5-8h/week (already
-running longer given the ingestion-layer detour and rebuild).
+The Bronze notebooks were refactored onto the `LakehouseLayerJob`/
+`BronzeIngestionJob` class hierarchy in `src/lakehouse` (see "OOP ingestion
+framework") - same read-Parquet/write-Delta behavior, now behind a tested,
+reusable class instead of duplicated inline code, and the template method
+(`extract`/`transform`/`validate`/`load`) Silver and Gold will subclass next.
+
+Next: write `01_silver_transform.py` as a `LakehouseLayerJob` subclass.
+Estimated 2-3 weeks at 5-8h/week (already running longer given the
+ingestion-layer detour and rebuild).
