@@ -1,11 +1,9 @@
 # Databricks notebook source
-CATALOG = "consumer_lending_risk_lakehouse"
-TABLE = "bureau"
-LANDING_PATH = f"abfss://landing@streditorigination01.dfs.core.windows.net/{TABLE}/"
+import os
+import sys
 
-df = spark.read.parquet(LANDING_PATH)
-(df.write
-   .format("delta")
-   .mode("overwrite")
-   .option("overwriteSchema", "true")
-   .saveAsTable(f"{CATALOG}.bronze.{TABLE}"))
+sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..")))
+
+from src.lakehouse.bronze import BronzeIngestionJob, BronzeTableConfig
+
+BronzeIngestionJob(spark, BronzeTableConfig(table="bureau")).run()
