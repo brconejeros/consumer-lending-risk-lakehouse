@@ -228,6 +228,14 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 - Do not add any AI/Claude attribution to commits — no `Co-Authored-By: Claude` (or
   similar) trailer, no mention of Claude/AI assistance in commit messages. Commits
   should read as authored solely by the repo owner.
+- This also applies to the git author/committer identity itself, not just the
+  message text — every commit (and any PR opened from one) must show as
+  authored by **Bruno Conejeros
+  `<53882404+brconejeros@users.noreply.github.com>`** (the GitHub noreply
+  address already used across this repo's history), never the tool's default
+  `Claude <noreply@anthropic.com>` identity. Set it per-commit, e.g.
+  `git -c user.name="Bruno Conejeros" -c user.email="53882404+brconejeros@users.noreply.github.com" commit -m "..."` —
+  do not touch global git config to do this.
 - The same rule applies to infrastructure: no "claude" or other AI references in
   Azure resource names, resource group names, tags, or SSH key comments.
 - Commit messages use Conventional Commits prefixes: `feat:`, `fix:`, `chore:`,
