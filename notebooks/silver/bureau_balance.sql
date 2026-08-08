@@ -47,9 +47,8 @@ FROM consumer_lending_risk_lakehouse.bronze.bureau_balance;
 -- FK check: every SK_ID_BUREAU must exist in bureau
 SELECT COUNT(*) AS orphan_sk_id_bureau_count
 FROM consumer_lending_risk_lakehouse.bronze.bureau_balance bb
-WHERE NOT EXISTS (
-  SELECT 1 FROM consumer_lending_risk_lakehouse.bronze.bureau b WHERE b.SK_ID_BUREAU = bb.SK_ID_BUREAU
-);
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.bureau b
+  ON b.SK_ID_BUREAU = bb.SK_ID_BUREAU;
 
 -- COMMAND ----------
 

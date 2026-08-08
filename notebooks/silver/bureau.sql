@@ -45,12 +45,10 @@ FROM consumer_lending_risk_lakehouse.bronze.bureau;
 -- FK check: SK_ID_CURR must exist in application_train or application_test
 SELECT COUNT(*) AS orphan_sk_id_curr_count
 FROM consumer_lending_risk_lakehouse.bronze.bureau b
-WHERE NOT EXISTS (
-    SELECT 1 FROM consumer_lending_risk_lakehouse.bronze.application_train a WHERE a.SK_ID_CURR = b.SK_ID_CURR
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM consumer_lending_risk_lakehouse.bronze.application_test t WHERE t.SK_ID_CURR = b.SK_ID_CURR
-  );
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.application_train a
+  ON a.SK_ID_CURR = b.SK_ID_CURR
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.application_test t
+  ON t.SK_ID_CURR = b.SK_ID_CURR;
 
 -- COMMAND ----------
 

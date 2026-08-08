@@ -42,19 +42,21 @@ FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance;
 
 -- COMMAND ----------
 
--- FK checks: SK_ID_PREV -> previous_application, SK_ID_CURR -> application
-SELECT
-  (SELECT COUNT(*) FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance c
-   WHERE NOT EXISTS (
-     SELECT 1 FROM consumer_lending_risk_lakehouse.bronze.previous_application pa WHERE pa.SK_ID_PREV = c.SK_ID_PREV
-   )) AS orphan_sk_id_prev_count,
-  (SELECT COUNT(*) FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance c
-   WHERE NOT EXISTS (
-       SELECT 1 FROM consumer_lending_risk_lakehouse.bronze.application_train a WHERE a.SK_ID_CURR = c.SK_ID_CURR
-     )
-     AND NOT EXISTS (
-       SELECT 1 FROM consumer_lending_risk_lakehouse.bronze.application_test t WHERE t.SK_ID_CURR = c.SK_ID_CURR
-     )) AS orphan_sk_id_curr_count;
+-- FK check: SK_ID_PREV -> previous_application
+SELECT COUNT(*) AS orphan_sk_id_prev_count
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance c
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.previous_application pa
+  ON pa.SK_ID_PREV = c.SK_ID_PREV;
+
+-- COMMAND ----------
+
+-- FK check: SK_ID_CURR -> application_train or application_test
+SELECT COUNT(*) AS orphan_sk_id_curr_count
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance c
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.application_train a
+  ON a.SK_ID_CURR = c.SK_ID_CURR
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.application_test t
+  ON t.SK_ID_CURR = c.SK_ID_CURR;
 
 -- COMMAND ----------
 
