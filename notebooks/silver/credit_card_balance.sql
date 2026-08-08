@@ -8,6 +8,16 @@
 -- MAGIC `SK_ID_CURR` carried directly), but for revolving credit card products
 -- MAGIC instead of POS/cash loans.
 -- MAGIC
+-- MAGIC **Why this matters:** revolving credit behavior is a classic consumer
+-- MAGIC credit risk signal in its own right — high utilization and frequent cash
+-- MAGIC advances often precede default, independent of what the installment-loan
+-- MAGIC tables show.
+-- MAGIC
+-- MAGIC **Key columns:** `AMT_BALANCE` relative to `AMT_CREDIT_LIMIT_ACTUAL`
+-- MAGIC (utilization rate) and `CNT_DRAWINGS_ATM_CURRENT` (cash-advance
+-- MAGIC frequency, often a financial-stress signal) are the strongest behavioral
+-- MAGIC indicators here, alongside `SK_DPD` for direct delinquency.
+-- MAGIC
 -- MAGIC The `AMT_DRAWINGS_*` fields are known to have high null rates in this
 -- MAGIC dataset (cards with no drawing activity that month) — quantified below
 -- MAGIC rather than assumed.

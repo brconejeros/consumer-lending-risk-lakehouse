@@ -9,8 +9,18 @@
 -- MAGIC `AMT_PAYMENT`/`DAYS_ENTRY_PAYMENT` represents a missed installment, not a
 -- MAGIC data-quality defect — quantified explicitly rather than filtered out.
 -- MAGIC
--- MAGIC `DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT` (actual vs. scheduled payment
--- MAGIC date) is the core late-payment signal this table contributes to Gold.
+-- MAGIC **Why this matters:** this is the most granular repayment behavior
+-- MAGIC available anywhere in the dataset — actual payment timing and amount
+-- MAGIC vs. what was scheduled, per installment. Aggregated per applicant
+-- MAGIC (average delay, worst delay, count of missed payments), it's typically
+-- MAGIC one of the single strongest feature groups for predicting `TARGET` in
+-- MAGIC public analyses of this dataset.
+-- MAGIC
+-- MAGIC **Key columns:** `DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT` (actual vs.
+-- MAGIC scheduled payment date) is the core late-payment signal this table
+-- MAGIC contributes to Gold. `AMT_PAYMENT` relative to `AMT_INSTALMENT`
+-- MAGIC (underpayment) is the equivalent signal for partial rather than late
+-- MAGIC payments.
 
 -- COMMAND ----------
 

@@ -9,6 +9,18 @@
 -- MAGIC `previous_application`, and what hangs off them) reaches back to this
 -- MAGIC table (or `application_train`) via `SK_ID_CURR`.
 -- MAGIC
+-- MAGIC **Why this matters:** this is the set of applicants the whole pipeline
+-- MAGIC ultimately has to answer the business question for — no `TARGET` to
+-- MAGIC learn from, so the answer has to come entirely from `application_test`'s
+-- MAGIC own fields plus everything joined in from the other tables.
+-- MAGIC
+-- MAGIC **Key columns:** same predictive columns as `application_train`
+-- MAGIC (`EXT_SOURCE_1/2/3`, `DAYS_BIRTH`, `DAYS_EMPLOYED`,
+-- MAGIC `AMT_CREDIT`/`AMT_INCOME_TOTAL`) — profiled here mainly to confirm the
+-- MAGIC same null-rate/range/category patterns hold as in the training sample,
+-- MAGIC since a Silver transform tuned only against `application_train` risks
+-- MAGIC breaking on shape differences in `application_test`.
+-- MAGIC
 -- MAGIC Same query set as `application_train.sql`, minus the `TARGET`
 -- MAGIC class-balance check.
 

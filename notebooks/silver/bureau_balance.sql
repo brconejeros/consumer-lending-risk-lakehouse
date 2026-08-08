@@ -9,6 +9,18 @@
 -- MAGIC has. It doesn't carry `SK_ID_CURR` directly — reaching an application
 -- MAGIC row means joining through `bureau` first.
 -- MAGIC
+-- MAGIC **Why this matters:** `bureau` tells you a client *had* external
+-- MAGIC credit; `bureau_balance` tells you how they *behaved* on it month by
+-- MAGIC month — a much stronger risk signal than the credit's existence alone,
+-- MAGIC and the closest external analogue to the payment-history behavior
+-- MAGIC `installments_payments` captures for Home Credit's own products.
+-- MAGIC
+-- MAGIC **Key columns:** `STATUS`, particularly the DPD buckets — `1`
+-- MAGIC (1-30 days past due) through `5` (120+ days past due or written
+-- MAGIC off/sold). Aggregating the worst-ever `STATUS` and the share of months
+-- MAGIC spent delinquent per `SK_ID_BUREAU` is a standard feature-engineering
+-- MAGIC move for this dataset worth planning for in Silver/Gold.
+-- MAGIC
 -- MAGIC The FK check here — every `SK_ID_BUREAU` must exist in `bureau` — is the
 -- MAGIC one `CLAUDE.md`'s "Data quality" section calls out explicitly.
 

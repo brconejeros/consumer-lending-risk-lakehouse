@@ -11,6 +11,21 @@
 -- MAGIC `POS_CASH_balance`, `credit_card_balance`, `installments_payments`) or
 -- MAGIC transitively (`bureau_balance` via `bureau`).
 -- MAGIC
+-- MAGIC **Why this matters:** `TARGET` is literally what the business problem
+-- MAGIC asks us to predict — "for a credit applicant without robust bank
+-- MAGIC history, what is the probability of default?" This table is the fact
+-- MAGIC anchor every other table enriches, and the column most other tables'
+-- MAGIC aggregates ultimately exist to help explain.
+-- MAGIC
+-- MAGIC **Key columns:** `EXT_SOURCE_1/2/3` are consistently the strongest
+-- MAGIC predictors of `TARGET` in this dataset (external normalized credit
+-- MAGIC scores — a missing value here is itself informative, worth watching
+-- MAGIC closely in the null-rate check below). `DAYS_BIRTH` (age) and
+-- MAGIC `DAYS_EMPLOYED` (employment stability) are the next-strongest
+-- MAGIC demographic signals. `AMT_CREDIT` relative to `AMT_INCOME_TOTAL` (debt
+-- MAGIC burden) is a classic underwriting ratio worth deriving explicitly in
+-- MAGIC Silver rather than leaving implicit.
+-- MAGIC
 -- MAGIC These queries check `SK_ID_CURR` uniqueness, the `TARGET` class balance,
 -- MAGIC null rates and plausible ranges on the columns most likely to need Silver
 -- MAGIC handling, and category distributions — see

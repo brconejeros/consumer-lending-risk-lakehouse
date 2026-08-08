@@ -9,6 +9,17 @@
 -- MAGIC `credit_card_balance`, and `installments_payments` — all monthly/event
 -- MAGIC history for whatever credit resulted from a given previous application.
 -- MAGIC
+-- MAGIC **Why this matters:** unlike `bureau`, this is history *with Home
+-- MAGIC Credit itself* — a repeat applicant's past approval/rejection pattern
+-- MAGIC is a direct prior on their current application's risk, in a way
+-- MAGIC external bureau data can only approximate.
+-- MAGIC
+-- MAGIC **Key columns:** `NAME_CONTRACT_STATUS` (Approved/Refused/Cancelled/
+-- MAGIC Unused) and `CODE_REJECT_REASON` capture Home Credit's own past risk
+-- MAGIC decisions about this client. The gap between `AMT_APPLICATION` (what
+-- MAGIC they asked for) and `AMT_CREDIT` (what they were actually granted) is a
+-- MAGIC useful proxy for how much the underwriting process trusted them.
+-- MAGIC
 -- MAGIC Several fields here are known from the public Home Credit dataset to be
 -- MAGIC almost entirely null (`RATE_INTEREST_PRIMARY`/`RATE_INTEREST_PRIVILEGED`)
 -- MAGIC or to use a `365243` sentinel in place of a real day count

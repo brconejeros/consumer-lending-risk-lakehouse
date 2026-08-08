@@ -10,9 +10,16 @@
 -- MAGIC `SK_ID_CURR` (→ `application_train`/`application_test`) directly, so
 -- MAGIC both FK paths are checked below.
 -- MAGIC
--- MAGIC `SK_DPD`/`SK_DPD_DEF` (days past due, with and without a tolerance for
--- MAGIC small amounts) are the key delinquency signal this table contributes to
--- MAGIC Gold.
+-- MAGIC **Why this matters:** this is direct, literal repayment behavior on
+-- MAGIC Home Credit's own products — the single most trustworthy "did this
+-- MAGIC person pay us back on time before" signal available, since it isn't
+-- MAGIC filtered through a third party the way `bureau`/`bureau_balance` are.
+-- MAGIC
+-- MAGIC **Key columns:** `SK_DPD`/`SK_DPD_DEF` (days past due, with and without
+-- MAGIC a tolerance for small amounts) are the key delinquency signal this
+-- MAGIC table contributes to Gold. `NAME_CONTRACT_STATUS` (active/completed/
+-- MAGIC signed) contextualizes whether a DPD reading came from a still-open or
+-- MAGIC already-closed credit.
 
 -- COMMAND ----------
 

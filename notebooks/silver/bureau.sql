@@ -9,6 +9,17 @@
 -- MAGIC `bureau_balance` hangs off this table via `SK_ID_BUREAU` (monthly balance
 -- MAGIC history per CB credit).
 -- MAGIC
+-- MAGIC **Why this matters:** this table *is* the "robust bank history" the
+-- MAGIC business problem is framed around — for applicants Home Credit has no
+-- MAGIC track record with, external Credit Bureau data is the only window into
+-- MAGIC how they've handled credit elsewhere.
+-- MAGIC
+-- MAGIC **Key columns:** `CREDIT_ACTIVE` (active vs. closed credits) and
+-- MAGIC `AMT_CREDIT_SUM_DEBT` (current outstanding debt) drive a client's overall
+-- MAGIC external debt exposure. `CREDIT_DAY_OVERDUE` and `AMT_CREDIT_MAX_OVERDUE`
+-- MAGIC are direct delinquency signals. `DAYS_CREDIT` (recency) matters because
+-- MAGIC recent bureau activity is more predictive than credits from years ago.
+-- MAGIC
 -- MAGIC These queries check `SK_ID_BUREAU` uniqueness, that every `SK_ID_CURR`
 -- MAGIC traces back to an application row, null rates/ranges on the debt and
 -- MAGIC overdue fields, and the `CREDIT_ACTIVE`/`CREDIT_TYPE`/`CREDIT_CURRENCY`
