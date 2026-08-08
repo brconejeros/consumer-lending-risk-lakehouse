@@ -1,4 +1,24 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## application_train — profiling
+-- MAGIC
+-- MAGIC The main table: one row per loan application (`SK_ID_CURR`), with static
+-- MAGIC applicant/loan data captured at application time plus the `TARGET` label
+-- MAGIC (1 = client had a late payment past the threshold on an early installment,
+-- MAGIC 0 = otherwise). This is the training sample — `application_test` is the
+-- MAGIC same shape without `TARGET`. Every other Bronze table hangs off this one
+-- MAGIC via `SK_ID_CURR`, either directly (`bureau`, `previous_application`,
+-- MAGIC `POS_CASH_balance`, `credit_card_balance`, `installments_payments`) or
+-- MAGIC transitively (`bureau_balance` via `bureau`).
+-- MAGIC
+-- MAGIC These queries check `SK_ID_CURR` uniqueness, the `TARGET` class balance,
+-- MAGIC null rates and plausible ranges on the columns most likely to need Silver
+-- MAGIC handling, and category distributions — see
+-- MAGIC `docs/superpowers/specs/2026-08-07-silver-profiling-notebooks-design.md`
+-- MAGIC for the full rationale.
+
+-- COMMAND ----------
+
 -- Row count and SK_ID_CURR uniqueness
 SELECT
   COUNT(*) AS row_count,

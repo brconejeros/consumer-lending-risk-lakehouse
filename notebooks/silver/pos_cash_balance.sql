@@ -1,4 +1,21 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## POS_CASH_balance — profiling
+-- MAGIC
+-- MAGIC Monthly balance snapshots for the applicant's previous Home Credit
+-- MAGIC point-of-sale and cash loans. Grain is one row per
+-- MAGIC (`SK_ID_PREV`, `MONTHS_BALANCE`) — same shape as `bureau_balance`, but
+-- MAGIC for Home Credit's *own* previous credits rather than external Credit
+-- MAGIC Bureau ones. Carries both `SK_ID_PREV` (→ `previous_application`) and
+-- MAGIC `SK_ID_CURR` (→ `application_train`/`application_test`) directly, so
+-- MAGIC both FK paths are checked below.
+-- MAGIC
+-- MAGIC `SK_DPD`/`SK_DPD_DEF` (days past due, with and without a tolerance for
+-- MAGIC small amounts) are the key delinquency signal this table contributes to
+-- MAGIC Gold.
+
+-- COMMAND ----------
+
 -- Row count and uniqueness of (SK_ID_PREV, MONTHS_BALANCE)
 SELECT
   COUNT(*) AS row_count,

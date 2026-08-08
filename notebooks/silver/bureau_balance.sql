@@ -1,4 +1,19 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## bureau_balance — profiling
+-- MAGIC
+-- MAGIC Monthly balance history for each credit in `bureau` — grain is one row
+-- MAGIC per (`SK_ID_BUREAU`, `MONTHS_BALANCE`). This is the largest table in the
+-- MAGIC dataset (~27.3M rows, per `CLAUDE.md`'s "Status") because it's `bureau`
+-- MAGIC rows multiplied out by however many months of history each CB credit
+-- MAGIC has. It doesn't carry `SK_ID_CURR` directly — reaching an application
+-- MAGIC row means joining through `bureau` first.
+-- MAGIC
+-- MAGIC The FK check here — every `SK_ID_BUREAU` must exist in `bureau` — is the
+-- MAGIC one `CLAUDE.md`'s "Data quality" section calls out explicitly.
+
+-- COMMAND ----------
+
 -- Row count and uniqueness of (SK_ID_BUREAU, MONTHS_BALANCE)
 SELECT
   COUNT(*) AS row_count,

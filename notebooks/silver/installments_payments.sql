@@ -1,4 +1,19 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## installments_payments — profiling
+-- MAGIC
+-- MAGIC Repayment history for previously disbursed Home Credit credits. Unlike
+-- MAGIC the balance tables, this isn't a monthly snapshot — it's one row per
+-- MAGIC installment payment event (made or missed), keyed by
+-- MAGIC (`SK_ID_PREV`, `NUM_INSTALMENT_NUMBER`, `NUM_INSTALMENT_VERSION`). A null
+-- MAGIC `AMT_PAYMENT`/`DAYS_ENTRY_PAYMENT` represents a missed installment, not a
+-- MAGIC data-quality defect — quantified explicitly rather than filtered out.
+-- MAGIC
+-- MAGIC `DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT` (actual vs. scheduled payment
+-- MAGIC date) is the core late-payment signal this table contributes to Gold.
+
+-- COMMAND ----------
+
 -- Row count
 SELECT COUNT(*) AS row_count
 FROM consumer_lending_risk_lakehouse.bronze.installments_payments;

@@ -1,4 +1,19 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## credit_card_balance — profiling
+-- MAGIC
+-- MAGIC Monthly balance snapshots for the applicant's previous Home Credit
+-- MAGIC credit cards. Same grain and FK shape as `POS_CASH_balance`
+-- MAGIC ((`SK_ID_PREV`, `MONTHS_BALANCE`), with both `SK_ID_PREV` and
+-- MAGIC `SK_ID_CURR` carried directly), but for revolving credit card products
+-- MAGIC instead of POS/cash loans.
+-- MAGIC
+-- MAGIC The `AMT_DRAWINGS_*` fields are known to have high null rates in this
+-- MAGIC dataset (cards with no drawing activity that month) — quantified below
+-- MAGIC rather than assumed.
+
+-- COMMAND ----------
+
 -- Row count and uniqueness of (SK_ID_PREV, MONTHS_BALANCE)
 SELECT
   COUNT(*) AS row_count,

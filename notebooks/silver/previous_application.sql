@@ -1,4 +1,21 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## previous_application — profiling
+-- MAGIC
+-- MAGIC Every prior Home Credit loan *application* (not just disbursed credits —
+-- MAGIC an application can be rejected or cancelled) for clients who have a loan
+-- MAGIC in our sample. Grain is one row per previous application (`SK_ID_PREV`).
+-- MAGIC Three tables hang off this one via `SK_ID_PREV`: `POS_CASH_balance`,
+-- MAGIC `credit_card_balance`, and `installments_payments` — all monthly/event
+-- MAGIC history for whatever credit resulted from a given previous application.
+-- MAGIC
+-- MAGIC Several fields here are known from the public Home Credit dataset to be
+-- MAGIC almost entirely null (`RATE_INTEREST_PRIMARY`/`RATE_INTEREST_PRIVILEGED`)
+-- MAGIC or to use a `365243` sentinel in place of a real day count
+-- MAGIC (`DAYS_FIRST_DRAWING`) — both are checked explicitly below.
+
+-- COMMAND ----------
+
 -- Row count and SK_ID_PREV uniqueness
 SELECT
   COUNT(*) AS row_count,

@@ -1,4 +1,21 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## bureau — profiling
+-- MAGIC
+-- MAGIC All of a client's previous credits from *other* financial institutions
+-- MAGIC that were reported to Credit Bureau, for clients who have a loan in our
+-- MAGIC sample. Grain is one row per previous CB credit (`SK_ID_BUREAU`) — a
+-- MAGIC given `SK_ID_CURR` can have zero, one, or many rows here.
+-- MAGIC `bureau_balance` hangs off this table via `SK_ID_BUREAU` (monthly balance
+-- MAGIC history per CB credit).
+-- MAGIC
+-- MAGIC These queries check `SK_ID_BUREAU` uniqueness, that every `SK_ID_CURR`
+-- MAGIC traces back to an application row, null rates/ranges on the debt and
+-- MAGIC overdue fields, and the `CREDIT_ACTIVE`/`CREDIT_TYPE`/`CREDIT_CURRENCY`
+-- MAGIC category distributions.
+
+-- COMMAND ----------
+
 -- Row count and SK_ID_BUREAU uniqueness
 SELECT
   COUNT(*) AS row_count,

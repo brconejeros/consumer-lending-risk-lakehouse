@@ -1,4 +1,19 @@
 -- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## application_test — profiling
+-- MAGIC
+-- MAGIC Same shape and grain as `application_train` (one row per loan
+-- MAGIC application, `SK_ID_CURR`), minus the `TARGET` label — this is the
+-- MAGIC holdout sample the business problem is ultimately scored against. Same
+-- MAGIC downstream relationships apply: every satellite table (`bureau`,
+-- MAGIC `previous_application`, and what hangs off them) reaches back to this
+-- MAGIC table (or `application_train`) via `SK_ID_CURR`.
+-- MAGIC
+-- MAGIC Same query set as `application_train.sql`, minus the `TARGET`
+-- MAGIC class-balance check.
+
+-- COMMAND ----------
+
 -- Row count and SK_ID_CURR uniqueness
 SELECT
   COUNT(*) AS row_count,
