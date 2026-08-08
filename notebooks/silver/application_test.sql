@@ -2,27 +2,34 @@
 -- MAGIC %md
 -- MAGIC ## application_test — profiling
 -- MAGIC
--- MAGIC Same shape and grain as `application_train` (one row per loan
--- MAGIC application, `SK_ID_CURR`), minus the `TARGET` label — this is the
--- MAGIC holdout sample the business problem is ultimately scored against. Same
--- MAGIC downstream relationships apply: every satellite table (`bureau`,
--- MAGIC `previous_application`, and what hangs off them) reaches back to this
--- MAGIC table (or `application_train`) via `SK_ID_CURR`.
+-- MAGIC **What is this table?** Same shape as `application_train`, minus the
+-- MAGIC `TARGET` label — the holdout sample the business problem is ultimately
+-- MAGIC scored against.
 -- MAGIC
--- MAGIC **Why this matters:** this is the set of applicants the whole pipeline
--- MAGIC ultimately has to answer the business question for — no `TARGET` to
--- MAGIC learn from, so the answer has to come entirely from `application_test`'s
--- MAGIC own fields plus everything joined in from the other tables.
+-- MAGIC **What's one row?** `SK_ID_CURR` — primary key, one row per loan
+-- MAGIC application.
 -- MAGIC
--- MAGIC **Key columns:** same predictive columns as `application_train`
--- MAGIC (`EXT_SOURCE_1/2/3`, `DAYS_BIRTH`, `DAYS_EMPLOYED`,
+-- MAGIC **How do I connect it to an applicant?** Same as `application_train` —
+-- MAGIC every satellite table (`bureau`, `previous_application`, and what hangs
+-- MAGIC off them) reaches back to this table (or `application_train`) via
+-- MAGIC `SK_ID_CURR`.
+-- MAGIC
+-- MAGIC **Why does it matter for predicting default?** This is the set of
+-- MAGIC applicants the whole pipeline ultimately has to answer the business
+-- MAGIC question for — no `TARGET` to learn from, so the answer has to come
+-- MAGIC entirely from `application_test`'s own fields plus everything joined in
+-- MAGIC from the other tables.
+-- MAGIC
+-- MAGIC **Which columns matter most?** Same predictive columns as
+-- MAGIC `application_train` (`EXT_SOURCE_1/2/3`, `DAYS_BIRTH`, `DAYS_EMPLOYED`,
 -- MAGIC `AMT_CREDIT`/`AMT_INCOME_TOTAL`) — profiled here mainly to confirm the
--- MAGIC same null-rate/range/category patterns hold as in the training sample,
--- MAGIC since a Silver transform tuned only against `application_train` risks
--- MAGIC breaking on shape differences in `application_test`.
+-- MAGIC same null-rate/range/category patterns hold as in the training sample.
 -- MAGIC
--- MAGIC Same query set as `application_train.sql`, minus the `TARGET`
--- MAGIC class-balance check.
+-- MAGIC **What should I watch out for?** Same `DAYS_EMPLOYED` sentinel as
+-- MAGIC `application_train`; also worth checking that category values seen in
+-- MAGIC training (e.g. `NAME_INCOME_TYPE`) are consistent here — a Silver
+-- MAGIC transform tuned only against `application_train` risks breaking on
+-- MAGIC unseen categories or shape differences in `application_test`.
 
 -- COMMAND ----------
 

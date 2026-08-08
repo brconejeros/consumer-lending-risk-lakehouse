@@ -2,25 +2,36 @@
 -- MAGIC %md
 -- MAGIC ## installments_payments — profiling
 -- MAGIC
--- MAGIC Repayment history for previously disbursed Home Credit credits. Unlike
--- MAGIC the balance tables, this isn't a monthly snapshot — it's one row per
--- MAGIC installment payment event (made or missed), keyed by
--- MAGIC (`SK_ID_PREV`, `NUM_INSTALMENT_NUMBER`, `NUM_INSTALMENT_VERSION`). A null
--- MAGIC `AMT_PAYMENT`/`DAYS_ENTRY_PAYMENT` represents a missed installment, not a
--- MAGIC data-quality defect — quantified explicitly rather than filtered out.
+-- MAGIC **What is this table?** Repayment history for previously disbursed
+-- MAGIC Home Credit credits. Unlike the balance tables, this isn't a monthly
+-- MAGIC snapshot — it's one row per installment payment event, made or missed.
 -- MAGIC
--- MAGIC **Why this matters:** this is the most granular repayment behavior
--- MAGIC available anywhere in the dataset — actual payment timing and amount
--- MAGIC vs. what was scheduled, per installment. Aggregated per applicant
--- MAGIC (average delay, worst delay, count of missed payments), it's typically
--- MAGIC one of the single strongest feature groups for predicting `TARGET` in
--- MAGIC public analyses of this dataset.
+-- MAGIC **What's one row?** (`SK_ID_PREV`, `NUM_INSTALMENT_NUMBER`,
+-- MAGIC `NUM_INSTALMENT_VERSION`) — a composite key.
 -- MAGIC
--- MAGIC **Key columns:** `DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT` (actual vs.
--- MAGIC scheduled payment date) is the core late-payment signal this table
--- MAGIC contributes to Gold. `AMT_PAYMENT` relative to `AMT_INSTALMENT`
--- MAGIC (underpayment) is the equivalent signal for partial rather than late
--- MAGIC payments.
+-- MAGIC **How do I connect it to an applicant?** `SK_ID_CURR` is carried
+-- MAGIC directly (→ `application_train`/`application_test`); `SK_ID_PREV` (→
+-- MAGIC `previous_application`) is also available, and both FK paths are
+-- MAGIC checked below.
+-- MAGIC
+-- MAGIC **Why does it matter for predicting default?** This is the most
+-- MAGIC granular repayment behavior available anywhere in the dataset — actual
+-- MAGIC payment timing and amount vs. what was scheduled, per installment.
+-- MAGIC Aggregated per applicant (average delay, worst delay, count of missed
+-- MAGIC payments), it's typically one of the single strongest feature groups
+-- MAGIC for predicting `TARGET` in public analyses of this dataset.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT`
+-- MAGIC (actual vs. scheduled payment date) is the core late-payment signal
+-- MAGIC this table contributes to Gold. `AMT_PAYMENT` relative to
+-- MAGIC `AMT_INSTALMENT` (underpayment) is the equivalent signal for partial
+-- MAGIC rather than late payments.
+-- MAGIC
+-- MAGIC **What should I watch out for?** A null `AMT_PAYMENT`/
+-- MAGIC `DAYS_ENTRY_PAYMENT` represents a *missed* installment, not a
+-- MAGIC data-quality defect — filtering those rows out (rather than counting
+-- MAGIC them) would silently throw away the delinquency signal this table
+-- MAGIC exists to capture.
 
 -- COMMAND ----------
 

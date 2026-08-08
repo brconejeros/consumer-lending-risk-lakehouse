@@ -2,24 +2,34 @@
 -- MAGIC %md
 -- MAGIC ## POS_CASH_balance — profiling
 -- MAGIC
--- MAGIC Monthly balance snapshots for the applicant's previous Home Credit
--- MAGIC point-of-sale and cash loans. Grain is one row per
--- MAGIC (`SK_ID_PREV`, `MONTHS_BALANCE`) — same shape as `bureau_balance`, but
--- MAGIC for Home Credit's *own* previous credits rather than external Credit
--- MAGIC Bureau ones. Carries both `SK_ID_PREV` (→ `previous_application`) and
--- MAGIC `SK_ID_CURR` (→ `application_train`/`application_test`) directly, so
--- MAGIC both FK paths are checked below.
+-- MAGIC **What is this table?** Monthly balance snapshots for the applicant's
+-- MAGIC previous Home Credit point-of-sale and cash loans — same shape as
+-- MAGIC `bureau_balance`, but for Home Credit's *own* previous credits rather
+-- MAGIC than external Credit Bureau ones.
 -- MAGIC
--- MAGIC **Why this matters:** this is direct, literal repayment behavior on
--- MAGIC Home Credit's own products — the single most trustworthy "did this
--- MAGIC person pay us back on time before" signal available, since it isn't
--- MAGIC filtered through a third party the way `bureau`/`bureau_balance` are.
+-- MAGIC **What's one row?** (`SK_ID_PREV`, `MONTHS_BALANCE`) — a composite key.
 -- MAGIC
--- MAGIC **Key columns:** `SK_DPD`/`SK_DPD_DEF` (days past due, with and without
--- MAGIC a tolerance for small amounts) are the key delinquency signal this
--- MAGIC table contributes to Gold. `NAME_CONTRACT_STATUS` (active/completed/
--- MAGIC signed) contextualizes whether a DPD reading came from a still-open or
--- MAGIC already-closed credit.
+-- MAGIC **How do I connect it to an applicant?** `SK_ID_CURR` is carried
+-- MAGIC directly (→ `application_train`/`application_test`), so no join through
+-- MAGIC `previous_application` is required to reach the applicant — though
+-- MAGIC `SK_ID_PREV` (→ `previous_application`) is also available and both FK
+-- MAGIC paths are checked below.
+-- MAGIC
+-- MAGIC **Why does it matter for predicting default?** This is direct, literal
+-- MAGIC repayment behavior on Home Credit's own products — the single most
+-- MAGIC trustworthy "did this person pay us back on time before" signal
+-- MAGIC available, since it isn't filtered through a third party the way
+-- MAGIC `bureau`/`bureau_balance` are.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `SK_DPD`/`SK_DPD_DEF` (days past due,
+-- MAGIC with and without a tolerance for small amounts) are the key
+-- MAGIC delinquency signal this table contributes to Gold. `NAME_CONTRACT_STATUS`
+-- MAGIC (active/completed/signed) contextualizes whether a DPD reading came
+-- MAGIC from a still-open or already-closed credit.
+-- MAGIC
+-- MAGIC **What should I watch out for?** Same row/column shape as
+-- MAGIC `bureau_balance` — don't confuse the two. This one is Home Credit's own
+-- MAGIC history; `bureau_balance` is external.
 
 -- COMMAND ----------
 

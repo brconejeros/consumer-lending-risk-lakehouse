@@ -2,27 +2,35 @@
 -- MAGIC %md
 -- MAGIC ## bureau_balance — profiling
 -- MAGIC
--- MAGIC Monthly balance history for each credit in `bureau` — grain is one row
--- MAGIC per (`SK_ID_BUREAU`, `MONTHS_BALANCE`). This is the largest table in the
--- MAGIC dataset (~27.3M rows, per `CLAUDE.md`'s "Status") because it's `bureau`
--- MAGIC rows multiplied out by however many months of history each CB credit
--- MAGIC has. It doesn't carry `SK_ID_CURR` directly — reaching an application
--- MAGIC row means joining through `bureau` first.
+-- MAGIC **What is this table?** Monthly balance/status history for credits
+-- MAGIC reported to Credit Bureau — this is the largest table in the dataset
+-- MAGIC (~27.3M rows, per `CLAUDE.md`'s "Status") because it's `bureau` rows
+-- MAGIC multiplied out by however many months of history each CB credit has.
 -- MAGIC
--- MAGIC **Why this matters:** `bureau` tells you a client *had* external
--- MAGIC credit; `bureau_balance` tells you how they *behaved* on it month by
--- MAGIC month — a much stronger risk signal than the credit's existence alone,
--- MAGIC and the closest external analogue to the payment-history behavior
--- MAGIC `installments_payments` captures for Home Credit's own products.
+-- MAGIC **What's one row?** (`SK_ID_BUREAU`, `MONTHS_BALANCE`) — a composite
+-- MAGIC key, no single-column primary key.
 -- MAGIC
--- MAGIC **Key columns:** `STATUS`, particularly the DPD buckets — `1`
--- MAGIC (1-30 days past due) through `5` (120+ days past due or written
+-- MAGIC **How do I connect it to an applicant?** Join to `bureau` on
+-- MAGIC `SK_ID_BUREAU` first — this table has no `SK_ID_CURR` column at all.
+-- MAGIC
+-- MAGIC **Why does it matter for predicting default?** `bureau` tells you a
+-- MAGIC client *had* external credit; `bureau_balance` tells you how they
+-- MAGIC *behaved* on it month by month — a much stronger risk signal than the
+-- MAGIC credit's existence alone, and the closest external analogue to the
+-- MAGIC payment-history behavior `installments_payments` captures for Home
+-- MAGIC Credit's own products.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `STATUS`, particularly the DPD buckets
+-- MAGIC — `1` (1-30 days past due) through `5` (120+ days past due or written
 -- MAGIC off/sold). Aggregating the worst-ever `STATUS` and the share of months
 -- MAGIC spent delinquent per `SK_ID_BUREAU` is a standard feature-engineering
--- MAGIC move for this dataset worth planning for in Silver/Gold.
+-- MAGIC move for this dataset.
 -- MAGIC
--- MAGIC The FK check here — every `SK_ID_BUREAU` must exist in `bureau` — is the
--- MAGIC one `CLAUDE.md`'s "Data quality" section calls out explicitly.
+-- MAGIC **What should I watch out for?** No `SK_ID_CURR` column — a naive join
+-- MAGIC straight to `application_train` will silently return zero rows rather
+-- MAGIC than erroring. The FK check below (every `SK_ID_BUREAU` must exist in
+-- MAGIC `bureau`) is the one `CLAUDE.md`'s "Data quality" section calls out
+-- MAGIC explicitly.
 
 -- COMMAND ----------
 

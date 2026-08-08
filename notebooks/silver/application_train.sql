@@ -2,35 +2,39 @@
 -- MAGIC %md
 -- MAGIC ## application_train — profiling
 -- MAGIC
--- MAGIC The main table: one row per loan application (`SK_ID_CURR`), with static
--- MAGIC applicant/loan data captured at application time plus the `TARGET` label
--- MAGIC (1 = client had a late payment past the threshold on an early installment,
--- MAGIC 0 = otherwise). This is the training sample — `application_test` is the
--- MAGIC same shape without `TARGET`. Every other Bronze table hangs off this one
--- MAGIC via `SK_ID_CURR`, either directly (`bureau`, `previous_application`,
--- MAGIC `POS_CASH_balance`, `credit_card_balance`, `installments_payments`) or
--- MAGIC transitively (`bureau_balance` via `bureau`).
+-- MAGIC **What is this table?** The main table — static applicant/loan data
+-- MAGIC captured at application time, plus the `TARGET` label (1 = client had a
+-- MAGIC late payment past the threshold on an early installment, 0 = otherwise).
+-- MAGIC This is the training sample; `application_test` is the same shape
+-- MAGIC without `TARGET`.
 -- MAGIC
--- MAGIC **Why this matters:** `TARGET` is literally what the business problem
--- MAGIC asks us to predict — "for a credit applicant without robust bank
--- MAGIC history, what is the probability of default?" This table is the fact
--- MAGIC anchor every other table enriches, and the column most other tables'
--- MAGIC aggregates ultimately exist to help explain.
+-- MAGIC **What's one row?** `SK_ID_CURR` — primary key, one row per loan
+-- MAGIC application.
 -- MAGIC
--- MAGIC **Key columns:** `EXT_SOURCE_1/2/3` are consistently the strongest
--- MAGIC predictors of `TARGET` in this dataset (external normalized credit
--- MAGIC scores — a missing value here is itself informative, worth watching
--- MAGIC closely in the null-rate check below). `DAYS_BIRTH` (age) and
--- MAGIC `DAYS_EMPLOYED` (employment stability) are the next-strongest
+-- MAGIC **How do I connect it to an applicant?** This *is* the applicant table
+-- MAGIC — everything else joins back here via `SK_ID_CURR`, either directly
+-- MAGIC (`bureau`, `previous_application`, `POS_CASH_balance`,
+-- MAGIC `credit_card_balance`, `installments_payments`) or transitively
+-- MAGIC (`bureau_balance`, via `bureau`).
+-- MAGIC
+-- MAGIC **Why does it matter for predicting default?** `TARGET` is literally
+-- MAGIC what the business problem asks us to predict — "for a credit applicant
+-- MAGIC without robust bank history, what is the probability of default?" This
+-- MAGIC table is the fact anchor every other table enriches.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `EXT_SOURCE_1/2/3` are consistently the
+-- MAGIC strongest predictors of `TARGET` in this dataset (external normalized
+-- MAGIC credit scores — a missing value here is itself informative). `DAYS_BIRTH`
+-- MAGIC (age) and `DAYS_EMPLOYED` (employment stability) are the next-strongest
 -- MAGIC demographic signals. `AMT_CREDIT` relative to `AMT_INCOME_TOTAL` (debt
 -- MAGIC burden) is a classic underwriting ratio worth deriving explicitly in
--- MAGIC Silver rather than leaving implicit.
+-- MAGIC Silver.
 -- MAGIC
--- MAGIC These queries check `SK_ID_CURR` uniqueness, the `TARGET` class balance,
--- MAGIC null rates and plausible ranges on the columns most likely to need Silver
--- MAGIC handling, and category distributions — see
--- MAGIC `docs/superpowers/specs/2026-08-07-silver-profiling-notebooks-design.md`
--- MAGIC for the full rationale.
+-- MAGIC **What should I watch out for?** `DAYS_EMPLOYED` uses a `365243`
+-- MAGIC sentinel value instead of a real day count for some applicants (e.g.
+-- MAGIC pensioners/unemployed) — treating it as a continuous field without
+-- MAGIC filtering that out first will badly skew any aggregate. Checked
+-- MAGIC explicitly below.
 
 -- COMMAND ----------
 

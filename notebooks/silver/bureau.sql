@@ -2,28 +2,34 @@
 -- MAGIC %md
 -- MAGIC ## bureau — profiling
 -- MAGIC
--- MAGIC All of a client's previous credits from *other* financial institutions
--- MAGIC that were reported to Credit Bureau, for clients who have a loan in our
--- MAGIC sample. Grain is one row per previous CB credit (`SK_ID_BUREAU`) — a
--- MAGIC given `SK_ID_CURR` can have zero, one, or many rows here.
--- MAGIC `bureau_balance` hangs off this table via `SK_ID_BUREAU` (monthly balance
--- MAGIC history per CB credit).
+-- MAGIC **What is this table?** All of a client's previous credits from
+-- MAGIC *other* financial institutions that were reported to Credit Bureau, for
+-- MAGIC clients who have a loan in our sample.
 -- MAGIC
--- MAGIC **Why this matters:** this table *is* the "robust bank history" the
--- MAGIC business problem is framed around — for applicants Home Credit has no
--- MAGIC track record with, external Credit Bureau data is the only window into
--- MAGIC how they've handled credit elsewhere.
+-- MAGIC **What's one row?** `SK_ID_BUREAU` — primary key, one row per previous
+-- MAGIC CB credit. `SK_ID_CURR` is also present but not unique (one applicant
+-- MAGIC can have zero, one, or many bureau credits).
 -- MAGIC
--- MAGIC **Key columns:** `CREDIT_ACTIVE` (active vs. closed credits) and
--- MAGIC `AMT_CREDIT_SUM_DEBT` (current outstanding debt) drive a client's overall
--- MAGIC external debt exposure. `CREDIT_DAY_OVERDUE` and `AMT_CREDIT_MAX_OVERDUE`
--- MAGIC are direct delinquency signals. `DAYS_CREDIT` (recency) matters because
--- MAGIC recent bureau activity is more predictive than credits from years ago.
+-- MAGIC **How do I connect it to an applicant?** Join on `SK_ID_CURR` directly
+-- MAGIC back to `application_train`/`application_test`. `bureau_balance` hangs
+-- MAGIC off *this* table via `SK_ID_BUREAU`.
 -- MAGIC
--- MAGIC These queries check `SK_ID_BUREAU` uniqueness, that every `SK_ID_CURR`
--- MAGIC traces back to an application row, null rates/ranges on the debt and
--- MAGIC overdue fields, and the `CREDIT_ACTIVE`/`CREDIT_TYPE`/`CREDIT_CURRENCY`
--- MAGIC category distributions.
+-- MAGIC **Why does it matter for predicting default?** This table *is* the
+-- MAGIC "robust bank history" the business problem is framed around — for
+-- MAGIC applicants Home Credit has no track record with, external Credit
+-- MAGIC Bureau data is the only window into how they've handled credit
+-- MAGIC elsewhere.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `CREDIT_ACTIVE` (active vs. closed
+-- MAGIC credits) and `AMT_CREDIT_SUM_DEBT` (current outstanding debt) drive a
+-- MAGIC client's overall external debt exposure. `CREDIT_DAY_OVERDUE` and
+-- MAGIC `AMT_CREDIT_MAX_OVERDUE` are direct delinquency signals. `DAYS_CREDIT`
+-- MAGIC (recency) matters because recent bureau activity is more predictive
+-- MAGIC than credits from years ago.
+-- MAGIC
+-- MAGIC **What should I watch out for?** A client can have *zero* rows here —
+-- MAGIC that's not missing data to impute away, it's the exact population
+-- MAGIC ("without robust bank history") this whole project is about.
 
 -- COMMAND ----------
 

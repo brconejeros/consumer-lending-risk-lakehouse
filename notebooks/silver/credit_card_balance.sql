@@ -2,25 +2,33 @@
 -- MAGIC %md
 -- MAGIC ## credit_card_balance — profiling
 -- MAGIC
--- MAGIC Monthly balance snapshots for the applicant's previous Home Credit
--- MAGIC credit cards. Same grain and FK shape as `POS_CASH_balance`
--- MAGIC ((`SK_ID_PREV`, `MONTHS_BALANCE`), with both `SK_ID_PREV` and
--- MAGIC `SK_ID_CURR` carried directly), but for revolving credit card products
--- MAGIC instead of POS/cash loans.
+-- MAGIC **What is this table?** Monthly balance snapshots for the applicant's
+-- MAGIC previous Home Credit credit cards — same shape and FK structure as
+-- MAGIC `POS_CASH_balance`, but for revolving credit card products instead of
+-- MAGIC POS/cash loans.
 -- MAGIC
--- MAGIC **Why this matters:** revolving credit behavior is a classic consumer
--- MAGIC credit risk signal in its own right — high utilization and frequent cash
--- MAGIC advances often precede default, independent of what the installment-loan
--- MAGIC tables show.
+-- MAGIC **What's one row?** (`SK_ID_PREV`, `MONTHS_BALANCE`) — a composite key.
 -- MAGIC
--- MAGIC **Key columns:** `AMT_BALANCE` relative to `AMT_CREDIT_LIMIT_ACTUAL`
--- MAGIC (utilization rate) and `CNT_DRAWINGS_ATM_CURRENT` (cash-advance
--- MAGIC frequency, often a financial-stress signal) are the strongest behavioral
--- MAGIC indicators here, alongside `SK_DPD` for direct delinquency.
+-- MAGIC **How do I connect it to an applicant?** `SK_ID_CURR` is carried
+-- MAGIC directly (→ `application_train`/`application_test`); `SK_ID_PREV` (→
+-- MAGIC `previous_application`) is also available, and both FK paths are
+-- MAGIC checked below.
 -- MAGIC
--- MAGIC The `AMT_DRAWINGS_*` fields are known to have high null rates in this
--- MAGIC dataset (cards with no drawing activity that month) — quantified below
--- MAGIC rather than assumed.
+-- MAGIC **Why does it matter for predicting default?** Revolving credit
+-- MAGIC behavior is a classic consumer credit risk signal in its own right —
+-- MAGIC high utilization and frequent cash advances often precede default,
+-- MAGIC independent of what the installment-loan tables show.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `AMT_BALANCE` relative to
+-- MAGIC `AMT_CREDIT_LIMIT_ACTUAL` (utilization rate) and
+-- MAGIC `CNT_DRAWINGS_ATM_CURRENT` (cash-advance frequency, often a
+-- MAGIC financial-stress signal) are the strongest behavioral indicators here,
+-- MAGIC alongside `SK_DPD` for direct delinquency.
+-- MAGIC
+-- MAGIC **What should I watch out for?** The `AMT_DRAWINGS_*` fields are known
+-- MAGIC to have high null rates in this dataset — a null typically means "no
+-- MAGIC drawing activity that month" (effectively $0), not missing data.
+-- MAGIC Quantified below rather than assumed.
 
 -- COMMAND ----------
 
