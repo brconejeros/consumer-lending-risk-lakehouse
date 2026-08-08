@@ -1,0 +1,89 @@
+-- Databricks notebook source
+-- MAGIC %md
+-- MAGIC ## credit_card_balance — profiling
+-- MAGIC
+-- MAGIC **What is this table?** Monthly balance snapshots for the applicant's
+-- MAGIC previous Home Credit credit cards — same shape and FK structure as
+-- MAGIC `POS_CASH_balance`, but for revolving credit card products instead of
+-- MAGIC POS/cash loans.
+-- MAGIC
+-- MAGIC **What's one row?** (`SK_ID_PREV`, `MONTHS_BALANCE`) — a composite key.
+-- MAGIC
+-- MAGIC **How do I connect it to an applicant?** `SK_ID_CURR` is carried
+-- MAGIC directly (→ `application_train`/`application_test`); `SK_ID_PREV` (→
+-- MAGIC `previous_application`) is also available, and both FK paths are
+-- MAGIC checked below.
+-- MAGIC
+-- MAGIC **Why does it matter for predicting default?** Revolving credit
+-- MAGIC behavior is a classic consumer credit risk signal in its own right —
+-- MAGIC high utilization and frequent cash advances often precede default,
+-- MAGIC independent of what the installment-loan tables show.
+-- MAGIC
+-- MAGIC **Which columns matter most?** `AMT_BALANCE` relative to
+-- MAGIC `AMT_CREDIT_LIMIT_ACTUAL` (utilization rate) and
+-- MAGIC `CNT_DRAWINGS_ATM_CURRENT` (cash-advance frequency, often a
+-- MAGIC financial-stress signal) are the strongest behavioral indicators here,
+-- MAGIC alongside `SK_DPD` for direct delinquency.
+-- MAGIC
+-- MAGIC **What should I watch out for?** The `AMT_DRAWINGS_*` fields are known
+-- MAGIC to have high null rates in this dataset — a null typically means "no
+-- MAGIC drawing activity that month" (effectively $0), not missing data.
+-- MAGIC Quantified below rather than assumed.
+
+-- COMMAND ----------
+
+-- Row count and uniqueness of (SK_ID_PREV, MONTHS_BALANCE)
+SELECT
+  COUNT(*) AS row_count,
+  COUNT(DISTINCT SK_ID_PREV) AS distinct_sk_id_prev,
+  COUNT(DISTINCT SK_ID_PREV, MONTHS_BALANCE) AS distinct_key_combo,
+  COUNT(*) - COUNT(DISTINCT SK_ID_PREV, MONTHS_BALANCE) AS duplicate_key_combo
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance;
+
+-- COMMAND ----------
+
+-- FK check: SK_ID_PREV -> previous_application
+SELECT COUNT(*) AS orphan_sk_id_prev_count
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance c
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.previous_application pa
+  ON pa.SK_ID_PREV = c.SK_ID_PREV;
+
+-- COMMAND ----------
+
+-- FK check: SK_ID_CURR -> application_train or application_test
+SELECT COUNT(*) AS orphan_sk_id_curr_count
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance c
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.application_train a
+  ON a.SK_ID_CURR = c.SK_ID_CURR
+LEFT ANTI JOIN consumer_lending_risk_lakehouse.bronze.application_test t
+  ON t.SK_ID_CURR = c.SK_ID_CURR;
+
+-- COMMAND ----------
+
+-- Null rate on Silver-relevant columns
+SELECT
+  COUNT(*) AS total_rows,
+  ROUND(100.0 * SUM(CASE WHEN AMT_DRAWINGS_ATM_CURRENT IS NULL THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct_null_amt_drawings_atm_current,
+  ROUND(100.0 * SUM(CASE WHEN AMT_DRAWINGS_OTHER_CURRENT IS NULL THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct_null_amt_drawings_other_current,
+  ROUND(100.0 * SUM(CASE WHEN AMT_DRAWINGS_POS_CURRENT IS NULL THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct_null_amt_drawings_pos_current,
+  ROUND(100.0 * SUM(CASE WHEN AMT_PAYMENT_CURRENT IS NULL THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct_null_amt_payment_current
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance;
+
+-- COMMAND ----------
+
+-- Range checks
+SELECT
+  MIN(AMT_BALANCE) AS min_amt_balance,
+  MAX(AMT_BALANCE) AS max_amt_balance,
+  AVG(AMT_BALANCE) AS avg_amt_balance,
+  MIN(SK_DPD) AS min_sk_dpd,
+  MAX(SK_DPD) AS max_sk_dpd
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance;
+
+-- COMMAND ----------
+
+-- Distinct NAME_CONTRACT_STATUS values
+SELECT NAME_CONTRACT_STATUS, COUNT(*) AS row_count
+FROM consumer_lending_risk_lakehouse.bronze.credit_card_balance
+GROUP BY NAME_CONTRACT_STATUS
+ORDER BY NAME_CONTRACT_STATUS;
