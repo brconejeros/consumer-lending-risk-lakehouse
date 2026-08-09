@@ -84,7 +84,8 @@ notebooks/        → numbered pipeline notebooks, run in order
   bronze/<table>.py     → one notebook per table, instantiates BronzeIngestionJob
   01_silver_transform.py, 02_gold_aggregation.py, 03_quality_checks.py
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
-tests/        → unit tests for src/, run locally with pytest (no cluster needed)
+tests/unit/        → local pyspark+delta-spark tests, no cluster needed
+tests/integration/ → Databricks Connect tests against a real serverless cluster
 docs/         → architecture diagram, ER diagram for the star schema
 CLAUDE.md     → full project/architecture reference
 ```
