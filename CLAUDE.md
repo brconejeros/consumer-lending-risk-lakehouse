@@ -184,9 +184,38 @@ next:
   `validate` for null handling, dedup, FK checks, and star-schema
   aggregation — same base class, same common libraries (`pyspark`, stdlib
   `dataclasses`/`abc`/`logging`), no new dependency per layer.
-- Covered by `tests/test_base.py` and `tests/test_bronze.py`, run locally
-  against `pyspark` + `delta-spark` (no live cluster needed) — see "Working
-  locally" for the version pin this requires.
+- Covered by `tests/unit/test_base.py` and `tests/unit/test_bronze.py`, run
+  locally against `pyspark` + `delta-spark` (no live cluster needed) — see
+  "Working locally" for the version pin this requires.
+
+## Silver naming convention
+
+Applies from Silver onward only — Bronze keeps the source dataset's raw
+casing (see "Conventions" below), since Bronze's whole point is
+traceability back to the raw CSVs/Postgres tables.
+
+- **Columns** — PascalCase with a trailing type suffix reflecting what the
+  value represents, not just its literal name:
+
+  | Suffix | Meaning | Example |
+  |---|---|---|
+  | `Id` | surrogate key | `SK_ID_CURR` → `CurrId` |
+  | `Amt` | monetary amount | `AMT_INCOME_TOTAL` → `IncomeTotalAmt` |
+  | `Cd` | coded/categorical value | `CODE_GENDER` → `GenderCd` |
+  | `Cnt` | count | `CNT_CHILDREN` → `ChildrenCnt` |
+  | `Flg` | 0/1 boolean | `FLAG_OWN_CAR` → `OwnCarFlg` |
+  | `Days` | relative day-count delta | `DAYS_BIRTH` → `BirthDays` |
+  | `Avg`/`Mode`/`Medi` | normalized housing stat | `APARTMENTS_AVG` → `ApartmentsAvg` |
+
+  `src/lakehouse/naming.py`'s `to_silver_column_name()` applies the
+  mechanical prefix-strip rules above automatically. Anything that doesn't
+  fit a rule (e.g. `EXT_SOURCE_n` normalized scores, which should get a
+  `Score` suffix) goes into that table's `SilverTableConfig.column_overrides`
+  once the table is actually wired up, rather than being guessed at
+  automatically.
+- **Tables** — `tb_<snake_case_name>`, all lowercase, via
+  `to_silver_table_name()` in the same module (e.g. `POS_CASH_balance` →
+  `tb_pos_cash_balance`).
 
 ## Repo layout
 
@@ -207,11 +236,19 @@ next:
   - `01_silver_transform.py`, `02_gold_aggregation.py`, `03_quality_checks.py` —
     operate on the whole layer at once, so they stay single notebooks
 - `/src/lakehouse` — the `LakehouseLayerJob` class hierarchy shared across
-  medallion layers (schema definitions, aggregation functions, and quality
-  check helpers will land here too as Silver/Gold are built out) — see "OOP
-  ingestion framework"
-- `/tests` — unit tests for `/src`, run locally via `pytest` against a local
-  Spark + Delta session (no Databricks cluster required)
+  medallion layers — see "OOP ingestion framework". `base.py`/`bronze.py`
+  (Bronze), `naming.py` (Silver-onward column/table naming rules — pure
+  Python, no Spark import, see "Silver naming convention"), `silver.py`
+  (`SilverTransformJob`/`SilverTableConfig`/`FkCheck` — table-agnostic
+  until a table's `SilverTableConfig` is actually instantiated),
+  `session.py` (Databricks Connect serverless session factory, used only
+  by `tests/integration`)
+- `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
+  (no Databricks cluster required), run via `uv run pytest tests/unit`
+- `/tests/integration` — tests against a real **serverless** Databricks
+  cluster over Databricks Connect (`src/lakehouse/session.py`); run via the
+  separate `.venv-dbconnect` env, not the default one — see "Working
+  locally"
 - `/docs` — architecture diagram, ER diagram for the star schema, design notes
 - `README.md` — problem statement, architecture summary, how to run
 
@@ -311,9 +348,25 @@ just "how do I actually run the next command."
   regardless of 2-part vs 3-part table name or `spark.sql.catalogImplementation`.
   Doesn't affect the real pipeline (Databricks Runtime's own Delta/Unity
   Catalog integration doesn't hit this), only local `pytest` runs against
-  `tests/conftest.py`'s local Spark+Delta session - if `uv add`/`uv sync`
+  `tests/unit/conftest.py`'s local Spark+Delta session - if `uv add`/`uv sync`
   ever bumps `pyspark` past `3.5.3`, re-pin it rather than debugging the
   symptom.
+- **Databricks Connect integration tests need a separate venv** -
+  `databricks-connect` and plain `pyspark` fight at Spark-context init time
+  if both are importable in the same environment, so `tests/integration`
+  never shares an env with `tests/unit`. Run
+  `./scripts/setup_dbconnect_env.sh` once (creates `.venv-dbconnect`,
+  installs `databricks-connect`/`pytest`/`python-dotenv` - doesn't touch
+  `pyproject.toml`/`uv.lock`), then
+  `.venv-dbconnect/bin/pytest tests/integration` (`.venv-dbconnect/Scripts/pytest.exe`
+  on Windows) for the serverless-cluster tests, vs. `uv run pytest
+  tests/unit` for the local ones. Auth: `tests/integration/conftest.py`
+  reads the profile name from the `DATABRICKS_CONFIG_PROFILE` env var (falls
+  back to the SDK's own default-profile resolution if unset) rather than a
+  hardcoded name - point it at whichever `~/.databrickscfg` profile is
+  authenticated against this project's actual **Azure** Databricks
+  workspace, via `databricks auth login --host <workspace-url> --profile
+  <name>` (browser OAuth, no CLI installed on a fresh machine by default).
 
 **Resuming work, in order:**
 1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes
@@ -410,8 +463,24 @@ The Bronze notebooks were refactored onto the `LakehouseLayerJob`/
 `BronzeIngestionJob` class hierarchy in `src/lakehouse` (see "OOP ingestion
 framework") - same read-Parquet/write-Delta behavior, now behind a tested,
 reusable class instead of duplicated inline code, and the template method
-(`extract`/`transform`/`validate`/`load`) Silver and Gold will subclass next.
+(`extract`/`transform`/`validate`/`load`) Silver and Gold subclass too.
 
-Next: write `01_silver_transform.py` as a `LakehouseLayerJob` subclass.
-Estimated 2-3 weeks at 5-8h/week (already running longer given the
-ingestion-layer detour and rebuild).
+The Silver layer's framework was built next: `src/lakehouse/naming.py`
+(PascalCase+suffix column naming, `tb_` table naming - pure Python, no
+Spark, see "Silver naming convention"), `src/lakehouse/silver.py`
+(`SilverTransformJob`/`SilverTableConfig`/`FkCheck` - table-agnostic
+extract/transform/validate/load, FK checks via left-anti join rather than
+a subquery, which a prior reverted Silver attempt hit a Photon bug on), and
+`src/lakehouse/session.py` (a Databricks Connect serverless session
+factory). Tests split into `tests/unit` (local `pyspark`+`delta-spark`,
+unchanged behavior) and `tests/integration` (Databricks Connect against a
+real serverless cluster, via the separate `.venv-dbconnect` env from
+`scripts/setup_dbconnect_env.sh` - see "Working locally").
+
+No table is wired into `SilverTransformJob` yet - deliberately deferred so
+the framework and naming convention could land and get reviewed first.
+Next: instantiate `SilverTableConfig` for each of the 8 tables
+(`column_overrides`, `dedup_keys`, `fk_checks` per the "Data quality"
+section above) and wire `01_silver_transform.py`. Estimated 2-3 weeks at
+5-8h/week (already running longer given the ingestion-layer detour and
+rebuild).
