@@ -391,6 +391,16 @@ just "how do I actually run the next command."
   authenticated against this project's actual **Azure** Databricks
   workspace, via `databricks auth login --host <workspace-url> --profile
   <name>` (browser OAuth, no CLI installed on a fresh machine by default).
+- **`databricks-connect` is pinned to `==18.3` on Python 3.12** (both set in
+  `scripts/setup_dbconnect_env.sh`), not latest/whatever Python `uv venv`
+  defaults to - verified broken: `19.0.0` on Python 3.13 fails every
+  serverless session with `INVALID_PARAMETER_VALUE.INVALID_CLIENT_IMAGE_VERSION`,
+  because it requests a client image version newer than this Azure
+  workspace's serverless compute supports. Databricks' own compatibility
+  table (linked in the script) lists `18.0`-`18.3` as the current top
+  serverless-compatible bracket, requiring Python 3.12 - if `tests/
+  integration` ever starts failing the same way again, re-check that table
+  and re-pin both together rather than just bumping the package.
 
 **Resuming work, in order:**
 1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes
@@ -514,10 +524,14 @@ targeted, not exhaustive - only added where the mechanical rule in
 column; plain unprefixed descriptive columns fall back to plain PascalCase
 rather than getting a suffix for its own sake.
 
-Not yet verified end-to-end against real Bronze data or Unity Catalog -
-`tests/integration` needs a `~/.databrickscfg` profile authenticated
-against this project's actual Azure Databricks workspace (see "Working
-locally"), and the notebooks themselves need a real cluster run. Next: run
+`tests/integration` now runs clean against this project's actual Azure
+Databricks workspace over Databricks Connect serverless compute (see
+"Working locally" for the `~/.databrickscfg` profile/version-pin setup this
+took) - confirms the real serverless session connects and that
+`SilverTransformJob`'s rename logic produces correct Silver column names
+against the real `application_train` Bronze table. The notebooks
+themselves (which additionally write to `silver` and run `FkCheck`s
+against the other 7 tables) still haven't been run for real. Next: run
 the `notebooks/silver/*.py` notebooks for real, confirm the `FkCheck`s pass
 against actual Bronze data (expected clean per Home Credit's own dataset
 consistency), then start `02_gold_aggregation.py`. Estimated 2-3 weeks at
