@@ -161,7 +161,7 @@ addition to reaching it transitively through `bureau_balance` → `bureau` or
 | Column | Description | Special |
 |---|---|---|
 | SK_ID_CURR | ID of loan in our sample — one loan can have 0, 1, 2, or more related previous credits in credit bureau | hashed |
-| SK_BUREAU_ID | Recoded ID of previous Credit Bureau credit related to our loan (unique per loan application) | hashed |
+| SK_ID_BUREAU | Recoded ID of previous Credit Bureau credit related to our loan (unique per loan application) | hashed |
 | CREDIT_ACTIVE | Status of the Credit Bureau (CB) reported credits | |
 | CREDIT_CURRENCY | Recoded currency of the Credit Bureau credit | recoded |
 | DAYS_CREDIT | How many days before current application did client apply for Credit Bureau credit | time only relative to the application |
@@ -178,15 +178,16 @@ addition to reaching it transitively through `bureau_balance` → `bureau` or
 | DAYS_CREDIT_UPDATE | How many days before loan application did last info about the CB credit come | time only relative to the application |
 | AMT_ANNUITY | Annuity of the CB credit | |
 
-Note: `bureau.csv` calls the bureau credit ID column `SK_BUREAU_ID` in this
-dictionary; the original Home Credit CSV header is `SK_ID_BUREAU`. Join key
-into `bureau_balance` either way.
+Note: an earlier version of this dictionary labeled the bureau credit ID
+column `SK_BUREAU_ID`; it's `SK_ID_BUREAU` in the actual Kaggle CSV header,
+Postgres, and Bronze (Bronze preserves source casing per this doc's naming
+convention) - the table rows above use the real name.
 
 ## bureau_balance
 
 | Column | Description | Special |
 |---|---|---|
-| SK_BUREAU_ID | Recoded ID of Credit Bureau credit (unique per application) — joins to `bureau` | hashed |
+| SK_ID_BUREAU | Recoded ID of Credit Bureau credit (unique per application) — joins to `bureau` | hashed |
 | MONTHS_BALANCE | Month of balance relative to application date (-1 = freshest balance date) | time only relative to the application |
 | STATUS | Status of CB loan during the month: active/closed/DPD buckets (`C`=closed, `X`=status unknown, `0`=no DPD, `1`=DPD 1-30, `2`=DPD 31-60, ... `5`=DPD 120+ or sold/written off) | |
 
@@ -290,12 +291,12 @@ into `bureau_balance` either way.
 ## Notes for Silver/Gold work
 
 - Grain per table: `application_{train|test}` and `bureau` are keyed at
-  `SK_ID_CURR`; `bureau_balance` is keyed at `SK_BUREAU_ID` + `MONTHS_BALANCE`;
+  `SK_ID_CURR`; `bureau_balance` is keyed at `SK_ID_BUREAU` + `MONTHS_BALANCE`;
   `POS_CASH_balance`, `credit_card_balance`, `installments_payments` are keyed
   at `SK_ID_PREV` + `MONTHS_BALANCE`/installment number; `previous_application`
   is keyed at `SK_ID_PREV`.
 - Referential integrity to check in Silver (per [CLAUDE.md](../CLAUDE.md) "Data
-  quality"): every `SK_BUREAU_ID`/`SK_ID_BUREAU` in `bureau_balance` must exist
+  quality"): every `SK_ID_BUREAU` in `bureau_balance` must exist
   in `bureau`; every `SK_ID_PREV` in `POS_CASH_balance`,
   `credit_card_balance`, and `installments_payments` must exist in
   `previous_application`.
