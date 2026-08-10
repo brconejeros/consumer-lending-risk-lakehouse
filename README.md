@@ -79,10 +79,12 @@ fan-out at query time.
 ```
 infra/terraform/  → Terraform: Postgres Flexible Server, Data Factory, ADLS Gen2 landing storage
 infra/postgres/   → CSV-load script (loads the 8 CSVs into Postgres as tables)
-notebooks/        → numbered pipeline notebooks, run in order
-  00_setup.sql          → Unity Catalog schema creation
-  bronze/<table>.py     → one notebook per table, instantiates BronzeIngestionJob
-  01_silver_transform.py, 02_gold_aggregation.py, 03_quality_checks.py
+notebooks/        → pipeline notebooks, run in order
+  00_setup.sql            → Unity Catalog schema creation
+  bronze/<table>.py       → one notebook per table, instantiates BronzeIngestionJob
+  silver/<table>.py       → one notebook per table, instantiates SilverTransformJob
+  silver_profiling/<table>.py → one notebook per table, exploratory (not a pipeline stage)
+  02_gold_aggregation.py, 03_quality_checks.py
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
 tests/unit/        → local pyspark+delta-spark tests, no cluster needed
 tests/integration/ → Databricks Connect tests against a real serverless cluster
@@ -101,10 +103,12 @@ CLAUDE.md     → full project/architecture reference
 3. **Bronze**: run the `bronze_ingestion` Databricks Job — loads the
    landed Parquet into `consumer_lending_risk_lakehouse.bronze` as Delta
    tables, one notebook per table.
-4. Open `/notebooks` in the Databricks workspace and run the rest in numeric
-   order, attached to a running cluster/warehouse:
-   - `01_silver_transform.py` — cleans types, nulls, dedups, validates FKs
-     *(pending)*
+4. **Silver**: run the 8 `notebooks/silver/<table>.py` notebooks (or wire
+   them into a `silver_transform` Databricks Job, mirroring `bronze_ingestion`)
+   — cleans types, nulls, dedups, validates FKs against Bronze, one notebook
+   per table.
+5. Open `/notebooks` in the Databricks workspace and run the rest, attached
+   to a running cluster/warehouse:
    - `02_gold_aggregation.py` — builds the star schema *(pending)*
    - `03_quality_checks.py` — data quality expectations *(pending)*
 

@@ -233,14 +233,30 @@ traceability back to the raw CSVs/Postgres tables.
     tables — explicit, separate task boundaries per table in the Databricks
     Job. The read/write logic itself is no longer duplicated across them;
     only the per-table config line differs
-  - `01_silver_transform.py`, `02_gold_aggregation.py`, `03_quality_checks.py` —
-    operate on the whole layer at once, so they stay single notebooks
+  - `silver/<table>.py` × 8 — same pattern as `bronze/`: a thin wrapper
+    instantiating `SilverTableConfig` with that table's `column_overrides`/
+    `dedup_keys`/`fk_checks` and calling `SilverTransformJob(...).run()`.
+    `fk_checks` reads Bronze rather than Silver (see "Data quality"), so
+    every table's job is independent - no run-order dependency between
+    these 8 files, same as Bronze's parallel task boundaries
+  - `02_gold_aggregation.py`, `03_quality_checks.py` — not yet built;
+    expected to stay single notebooks, since Gold's aggregation naturally
+    operates across tables at once rather than per-table like Bronze/Silver
+  - `silver_profiling/<table>.py` × 8 — same one-file-per-table pattern as
+    `bronze/`/`silver/`, not a pipeline stage. Each is exploratory: what
+    that Bronze table is, its grain, business relevance, key predictive
+    columns, and data-quality quirks, informing that table's
+    `silver/<table>.py` `column_overrides`/`fk_checks` choices. Shared
+    helpers (`null_rate`, `fk_orphan_count`) live in
+    `src/lakehouse/profiling.py` rather than being duplicated across the 8
+    files
 - `/src/lakehouse` — the `LakehouseLayerJob` class hierarchy shared across
   medallion layers — see "OOP ingestion framework". `base.py`/`bronze.py`
   (Bronze), `naming.py` (Silver-onward column/table naming rules — pure
   Python, no Spark import, see "Silver naming convention"), `silver.py`
-  (`SilverTransformJob`/`SilverTableConfig`/`FkCheck` — table-agnostic
-  until a table's `SilverTableConfig` is actually instantiated),
+  (`SilverTransformJob`/`SilverTableConfig`/`FkCheck`, wired up per-table in
+  `notebooks/silver/<table>.py`), `profiling.py` (`null_rate`/
+  `fk_orphan_count`, shared by `notebooks/silver_profiling/<table>.py`),
   `session.py` (Databricks Connect serverless session factory, used only
   by `tests/integration`)
 - `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
@@ -257,8 +273,16 @@ traceability back to the raw CSVs/Postgres tables.
 Validate with Delta Live Tables Expectations or Great Expectations:
 - `SK_ID_CURR` uniqueness in `fact_application`
 - plausible ranges for age/income fields
-- non-null checks on critical fields
-- foreign key integrity between Bronze tables before promoting to Silver
+- non-null checks on critical fields — in Silver today, scoped to each
+  table's grain columns (`SilverTableConfig.dedup_keys` doubles as the
+  null-check list, since a row with a null grain key isn't a meaningful row
+  either — see `src/lakehouse/silver.py`). Per-column business-rule null
+  handling beyond that is Gold-layer feature engineering, not implemented
+  here
+- foreign key integrity between Bronze tables before promoting to Silver —
+  `FkCheck.ref_table` in `SilverTableConfig` points at the *Bronze* parent
+  table specifically (not a Silver one), so every table's
+  `SilverTransformJob` can run independently, in any order
 
 ## Git commit conventions
 
@@ -310,11 +334,11 @@ Validate with Delta Live Tables Expectations or Great Expectations:
   should run from a single orchestrated entry point (the Databricks Job).
 - Keep transformation logic testable: prefer classes/functions in `/src` over
   inline notebook cells when logic is reused across notebooks. This now
-  includes the 8 per-table Bronze notebooks too — they call the shared
-  `BronzeIngestionJob` class rather than duplicating read/write code, but stay
-  as 8 separate notebook *files* rather than being collapsed into one script
-  that loops over all 8 tables (see "OOP ingestion framework" and "Repo
-  layout").
+  includes the 8 per-table Bronze and Silver notebooks too — they call the
+  shared `BronzeIngestionJob`/`SilverTransformJob` classes rather than
+  duplicating read/write/transform code, but stay as 8 separate notebook
+  *files* each rather than being collapsed into one script that loops over
+  all 8 tables (see "OOP ingestion framework" and "Repo layout").
 - Table/column naming stays in the source dataset's original casing
   (e.g. `SK_ID_CURR`, `AMT_INCOME_TOTAL`) for traceability back to the raw CSVs.
 
@@ -477,10 +501,25 @@ unchanged behavior) and `tests/integration` (Databricks Connect against a
 real serverless cluster, via the separate `.venv-dbconnect` env from
 `scripts/setup_dbconnect_env.sh` - see "Working locally").
 
-No table is wired into `SilverTransformJob` yet - deliberately deferred so
-the framework and naming convention could land and get reviewed first.
-Next: instantiate `SilverTableConfig` for each of the 8 tables
-(`column_overrides`, `dedup_keys`, `fk_checks` per the "Data quality"
-section above) and wire `01_silver_transform.py`. Estimated 2-3 weeks at
+All 8 tables are now wired into `SilverTransformJob`, one per-table
+notebook each under `notebooks/silver/` (mirroring `notebooks/bronze/`'s
+pattern - 8 separate files/Databricks-Job tasks rather than one script
+looping over all 8), informed by the 8 per-table `notebooks/
+silver_profiling/<table>.py` notebooks' findings (see "Silver naming
+convention" for the two real naming-rule misses they surfaced:
+`AMT_REQ_CREDIT_BUREAU_*` are enquiry counts despite the `AMT_` prefix, and
+`NFLAG_*` doesn't match the `FLAG_` prefix rule). `column_overrides` are
+targeted, not exhaustive - only added where the mechanical rule in
+`naming.py` is wrong or simply doesn't fire for an obviously coded/flagged
+column; plain unprefixed descriptive columns fall back to plain PascalCase
+rather than getting a suffix for its own sake.
+
+Not yet verified end-to-end against real Bronze data or Unity Catalog -
+`tests/integration` needs a `~/.databrickscfg` profile authenticated
+against this project's actual Azure Databricks workspace (see "Working
+locally"), and the notebooks themselves need a real cluster run. Next: run
+the `notebooks/silver/*.py` notebooks for real, confirm the `FkCheck`s pass
+against actual Bronze data (expected clean per Home Credit's own dataset
+consistency), then start `02_gold_aggregation.py`. Estimated 2-3 weeks at
 5-8h/week (already running longer given the ingestion-layer detour and
 rebuild).

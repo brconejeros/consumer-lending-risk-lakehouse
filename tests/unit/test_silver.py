@@ -64,6 +64,26 @@ def test_transform_dedupes_on_configured_keys(spark):
     assert result.count() == 2
 
 
+def test_transform_drops_rows_with_null_dedup_keys(spark):
+    df = spark.createDataFrame([(1, 100), (None, 200)], ["SK_ID_CURR", "AMT_CREDIT"])
+    config = SilverTableConfig(table="bureau", dedup_keys=("CurrId",))
+    job = SilverTransformJob(spark, config)
+
+    result = job.transform(df)
+
+    assert result.count() == 1
+    assert result.collect()[0]["CurrId"] == 1
+
+
+def test_transform_keeps_null_rows_when_no_dedup_keys_configured(spark):
+    df = spark.createDataFrame([(1, 100), (None, 200)], ["SK_ID_CURR", "AMT_CREDIT"])
+    job = SilverTransformJob(spark, SilverTableConfig(table="bureau"))
+
+    result = job.transform(df)
+
+    assert result.count() == 2
+
+
 def test_validate_passes_when_no_orphaned_fk_rows(spark):
     spark.sql("CREATE SCHEMA IF NOT EXISTS bronze")
     spark.createDataFrame([(1,), (2,)], ["BureauId"]).write.mode("overwrite").saveAsTable(

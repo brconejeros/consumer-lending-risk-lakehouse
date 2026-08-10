@@ -1,12 +1,15 @@
 """Silver layer: conform Bronze Delta tables into the naming convention,
-type-cast/dedup them, and check referential integrity before promoting.
+type-cast/dedup/null-check them, and check referential integrity before
+promoting.
 
-`SilverTransformJob` and `SilverTableConfig` are table-agnostic on purpose -
-no table gets wired up here yet (see the design-spec history in
-CLAUDE.md/git log for why previous Silver attempts got reverted). Wiring a
-concrete table is just instantiating `SilverTableConfig` with that table's
-`column_overrides`/`dedup_keys`/`fk_checks`, the same way each Bronze
-notebook instantiates `BronzeTableConfig`.
+`SilverTransformJob`/`SilverTableConfig` stay table-agnostic - concrete
+tables are wired up one per notebook under `notebooks/silver/<table>.py`,
+the same way each Bronze notebook instantiates `BronzeTableConfig`.
+`fk_checks` intentionally reads Bronze, not Silver
+(CLAUDE.md's "Data quality" section: "foreign key integrity between Bronze
+tables before promoting to Silver") - so every table's job can run
+independently, in any order, with no dependency on a parent table having
+already been written to Silver.
 """
 
 from __future__ import annotations
@@ -38,7 +41,9 @@ class SilverTableConfig:
 
     `column_overrides`/`type_casts`/`dedup_keys` all key off the *Silver*
     (post-rename) column names, since `transform` renames before applying
-    them.
+    them. `dedup_keys` doubles as the null-handling policy: a table's grain
+    columns must be non-null for a row to be meaningful, so `transform`
+    drops null-grain-key rows before deduping on them.
     """
 
     table: str
@@ -86,6 +91,9 @@ class SilverTransformJob(LakehouseLayerJob):
 
         for column, cast_type in self.config.type_casts.items():
             df = df.withColumn(column, df[column].cast(cast_type))
+
+        if self.config.dedup_keys:
+            df = df.dropna(subset=list(self.config.dedup_keys))
 
         return df.dropDuplicates(list(self.config.dedup_keys) or None)
 
