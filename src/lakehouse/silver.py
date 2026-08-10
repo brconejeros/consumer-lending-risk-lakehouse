@@ -3,9 +3,9 @@ type-cast/dedup/null-check them, and check referential integrity before
 promoting.
 
 `SilverTransformJob`/`SilverTableConfig` stay table-agnostic - concrete
-tables are wired up in `notebooks/01_silver_transform.py` via a list of
-`SilverTableConfig`s, the same way each Bronze notebook instantiates
-`BronzeTableConfig`. `fk_checks` intentionally reads Bronze, not Silver
+tables are wired up one per notebook under `notebooks/silver/<table>.py`,
+the same way each Bronze notebook instantiates `BronzeTableConfig`.
+`fk_checks` intentionally reads Bronze, not Silver
 (CLAUDE.md's "Data quality" section: "foreign key integrity between Bronze
 tables before promoting to Silver") - so every table's job can run
 independently, in any order, with no dependency on a parent table having
