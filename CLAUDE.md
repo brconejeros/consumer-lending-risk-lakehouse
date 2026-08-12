@@ -213,6 +213,14 @@ traceability back to the raw CSVs/Postgres tables.
   `Score` suffix) goes into that table's `SilverTableConfig.column_overrides`
   once the table is actually wired up, rather than being guessed at
   automatically.
+- **`Desc` columns** — opt-in, not mechanical. Where a `Cd` column's codes
+  have a genuinely documented, non-obvious meaning (e.g. `bureau_balance`'s
+  `StatusCd`: `0`-`5`/`C`/`X` DPD buckets), `SilverTableConfig.code_descriptions`
+  adds a `<Column>Desc` column decoding it into text, alongside the coded
+  column rather than replacing it. Most coded/categorical columns are
+  already human-readable text (`CreditActiveCd`, `ContractStatusCd`, ...)
+  and don't need this — only add it where the raw codes are genuinely
+  opaque without a lookup.
 - **Tables** — `tb_<snake_case_name>`, all lowercase, via
   `to_silver_table_name()` in the same module (e.g. `POS_CASH_balance` →
   `tb_pos_cash_balance`).
@@ -569,9 +577,23 @@ the live workspace - `consumer_lending_risk_lakehouse.silver` has all 8
 `tb_*` tables, verified by querying them directly afterward (row counts
 match the dry run exactly: `tb_bureau_balance` 24,179,741 rows after
 dropping the 3,120,184 orphans, `tb_application_train` 307,511 with 122
-correctly-renamed columns, etc.). Silver is done end-to-end. Next: start
-`02_gold_aggregation.py` - the star schema (`fact_application` +
-`dim_bureau`/`dim_previous_application`/`dim_installments_agg`/
+correctly-renamed columns, etc.). Silver is done end-to-end.
+
+A pass checking whether any Silver `Cd` column's codes had a documented
+but non-obvious meaning worth decoding found exactly one real case:
+`bureau_balance.StatusCd` (`0`-`5`/`C`/`X` DPD buckets, per
+`docs/data_dictionary.md` - itself fixed to spell out all 8 codes instead
+of truncating with "..."). Added via a new `SilverTableConfig.
+code_descriptions` field (see "Silver naming convention") - `StatusDesc`
+sits alongside `StatusCd`, not replacing it. Every other coded/categorical
+Silver column checked was already human-readable text
+(`CreditActiveCd`/`ContractStatusCd`/etc.) or had no documented per-value
+meaning to decode (`CreditCurrencyCd`, `RejectReasonCd`) - a separate pass
+also checked all Silver string columns for typos/casing/whitespace
+inconsistencies directly against live data and found none.
+
+Next: start `02_gold_aggregation.py` - the star schema (`fact_application`
++ `dim_bureau`/`dim_previous_application`/`dim_installments_agg`/
 `dim_credit_card_agg`, each pre-aggregated to `SK_ID_CURR` grain per
 "Architecture"). Estimated 2-3 weeks at 5-8h/week (already running longer
 given the ingestion-layer detour and rebuild).

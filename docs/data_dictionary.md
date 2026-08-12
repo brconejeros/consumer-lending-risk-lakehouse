@@ -189,7 +189,7 @@ convention) - the table rows above use the real name.
 |---|---|---|
 | SK_ID_BUREAU | Recoded ID of Credit Bureau credit (unique per application) — joins to `bureau` | hashed |
 | MONTHS_BALANCE | Month of balance relative to application date (-1 = freshest balance date) | time only relative to the application |
-| STATUS | Status of CB loan during the month: active/closed/DPD buckets (`C`=closed, `X`=status unknown, `0`=no DPD, `1`=DPD 1-30, `2`=DPD 31-60, ... `5`=DPD 120+ or sold/written off) | |
+| STATUS | Status of CB loan during the month: active/closed/DPD buckets (`C`=closed, `X`=status unknown, `0`=no DPD, `1`=DPD 1-30, `2`=DPD 31-60, `3`=DPD 61-90, `4`=DPD 91-120, `5`=DPD 120+ or sold/written off) | decoded into `StatusDesc` in Silver |
 
 ## POS_CASH_balance
 
