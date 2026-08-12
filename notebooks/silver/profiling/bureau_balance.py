@@ -23,7 +23,7 @@
 import os
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..")))
+sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..", "..")))
 
 from src.lakehouse.profiling import fk_orphan_count
 

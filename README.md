@@ -83,7 +83,7 @@ notebooks/        → pipeline notebooks, run in order
   00_setup.sql            → Unity Catalog schema creation
   bronze/<table>.py       → one notebook per table, instantiates BronzeIngestionJob
   silver/<table>.py       → one notebook per table, instantiates SilverTransformJob
-  silver_profiling/<table>.py → one notebook per table, exploratory (not a pipeline stage)
+  silver/profiling/<table>.py → one notebook per table, exploratory (not a pipeline stage)
   02_gold_aggregation.py, 03_quality_checks.py
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
 tests/unit/        → local pyspark+delta-spark tests, no cluster needed

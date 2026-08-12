@@ -1,5 +1,5 @@
 """Small Spark helpers shared across the per-table `notebooks/
-silver_profiling/<table>.py` notebooks, so each stays a thin script rather
+silver/profiling/<table>.py` notebooks, so each stays a thin script rather
 than duplicating this logic 8 times over.
 """
 

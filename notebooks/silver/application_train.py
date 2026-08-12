@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..")))
 from src.lakehouse.silver import SilverTableConfig, SilverTransformJob
 
 # EXT_SOURCE_* -> Score (strongest predictive signal in the dataset, see
-# notebooks/silver_profiling/application_train.py); AMT_REQ_CREDIT_BUREAU_*
+# notebooks/silver/profiling/application_train.py); AMT_REQ_CREDIT_BUREAU_*
 # -> Cnt (these are enquiry counts despite the AMT_ prefix - a real
 # source-data naming quirk).
 COLUMN_OVERRIDES = {
