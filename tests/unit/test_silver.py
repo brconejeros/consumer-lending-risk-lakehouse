@@ -1,5 +1,3 @@
-import pytest
-
 from src.lakehouse.silver import FkCheck, SilverTableConfig, SilverTransformJob
 
 
@@ -84,7 +82,7 @@ def test_transform_keeps_null_rows_when_no_dedup_keys_configured(spark):
     assert result.count() == 2
 
 
-def test_validate_passes_when_no_orphaned_fk_rows(spark):
+def test_transform_keeps_all_rows_when_no_orphaned_fk_rows(spark):
     spark.sql("CREATE SCHEMA IF NOT EXISTS bronze")
     spark.createDataFrame([(1,), (2,)], ["BureauId"]).write.mode("overwrite").saveAsTable(
         "spark_catalog.bronze.tb_bureau_ref"
@@ -96,10 +94,12 @@ def test_validate_passes_when_no_orphaned_fk_rows(spark):
     )
     job = SilverTransformJob(spark, config)
 
-    job.validate(df)
+    result = job.transform(df)
+
+    assert result.count() == 2
 
 
-def test_validate_raises_on_orphaned_fk_rows(spark):
+def test_transform_drops_orphaned_fk_rows_and_logs_a_warning(spark, caplog):
     spark.sql("CREATE SCHEMA IF NOT EXISTS bronze")
     spark.createDataFrame([(1,)], ["BureauId"]).write.mode("overwrite").saveAsTable(
         "spark_catalog.bronze.tb_bureau_ref_2"
@@ -111,8 +111,12 @@ def test_validate_raises_on_orphaned_fk_rows(spark):
     )
     job = SilverTransformJob(spark, config)
 
-    with pytest.raises(ValueError):
-        job.validate(df)
+    with caplog.at_level("WARNING"):
+        result = job.transform(df)
+
+    assert result.count() == 1
+    assert result.collect()[0]["BureauId"] == 1
+    assert "dropping 1 row" in caplog.text
 
 
 def test_run_lands_source_table_as_silver_delta_table(spark, tmp_path):

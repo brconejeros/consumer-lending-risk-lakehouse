@@ -43,6 +43,10 @@ print(f"POS_CASH_balance rows with no matching previous_application.SK_ID_PREV: 
 # MAGIC and without a small-balance tolerance) and `NAME_CONTRACT_STATUS`
 # MAGIC trended across months.
 # MAGIC
-# MAGIC **Data-quality watch-outs:** none needed beyond the automatic naming
-# MAGIC rules - every column here maps cleanly (`NAME_CONTRACT_STATUS`→`Cd`,
-# MAGIC `CNT_INSTALMENT*`→`Cnt`, `SK_ID_PREV`/`SK_ID_CURR`→`Id`).
+# MAGIC **Data-quality watch-outs:** naming needs no overrides - every column
+# MAGIC maps cleanly (`NAME_CONTRACT_STATUS`→`Cd`, `CNT_INSTALMENT*`→`Cnt`,
+# MAGIC `SK_ID_PREV`/`SK_ID_CURR`→`Id`). Referential integrity is a different
+# MAGIC story: ~3.4% of rows (checked above) reference a `SK_ID_PREV` that
+# MAGIC doesn't exist in `previous_application` - a genuine source-data gap,
+# MAGIC not a bug. `notebooks/silver/pos_cash_balance.py`'s `FkCheck` drops
+# MAGIC those rows with a logged warning rather than failing the run.

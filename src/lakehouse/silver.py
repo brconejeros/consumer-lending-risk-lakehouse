@@ -1,6 +1,6 @@
 """Silver layer: conform Bronze Delta tables into the naming convention,
-type-cast/dedup/null-check them, and check referential integrity before
-promoting.
+type-cast/dedup/null-check them, and drop rows that fail referential
+integrity before promoting.
 
 `SilverTransformJob`/`SilverTableConfig` stay table-agnostic - concrete
 tables are wired up one per notebook under `notebooks/silver/<table>.py`,
@@ -10,6 +10,14 @@ the same way each Bronze notebook instantiates `BronzeTableConfig`.
 tables before promoting to Silver") - so every table's job can run
 independently, in any order, with no dependency on a parent table having
 already been written to Silver.
+
+FK violations are **not** a hard failure: the real Home Credit dataset has
+a genuine, non-trivial rate of orphaned foreign keys (e.g. ~11% of
+`bureau_balance` rows reference a `bureau` credit that doesn't exist), so
+raising and blocking the whole table's load isn't the right response to
+that being data reality rather than a bug. Orphan rows get dropped with a
+logged warning instead, so Silver stays referentially clean without an
+engineer having to intervene on every run.
 """
 
 from __future__ import annotations
@@ -27,8 +35,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class FkCheck:
-    """One referential-integrity check: every `column` value in this job's
-    table must exist as `ref_column` in `ref_table`."""
+    """One referential-integrity check: rows whose `column` value doesn't
+    exist as `ref_column` in `ref_table` get dropped, with a warning logged
+    (not raised - see module docstring)."""
 
     column: str
     ref_table: str
@@ -69,7 +78,8 @@ class SilverTableConfig:
 
 
 class SilverTransformJob(LakehouseLayerJob):
-    """Bronze Delta -> Silver Delta: rename, cast, dedup, check FKs."""
+    """Bronze Delta -> Silver Delta: rename, cast, drop FK-orphaned rows,
+    dedup."""
 
     layer = "silver"
 
@@ -95,17 +105,26 @@ class SilverTransformJob(LakehouseLayerJob):
         if self.config.dedup_keys:
             df = df.dropna(subset=list(self.config.dedup_keys))
 
+        for fk in self.config.fk_checks:
+            df = self._drop_fk_orphans(df, fk)
+
         return df.dropDuplicates(list(self.config.dedup_keys) or None)
 
-    def validate(self, df: DataFrame) -> None:
-        for fk in self.config.fk_checks:
-            ref = self.spark.table(fk.ref_table)
-            orphans = df.join(ref, df[fk.column] == ref[fk.ref_column], "left_anti")
-            if not orphans.isEmpty():
-                raise ValueError(
-                    f"[silver] {self.config.table}.{fk.column} has rows with no "
-                    f"match in {fk.ref_table}.{fk.ref_column}"
-                )
+    def _drop_fk_orphans(self, df: DataFrame, fk: FkCheck) -> DataFrame:
+        ref = self.spark.table(fk.ref_table)
+        orphans = df.join(ref, df[fk.column] == ref[fk.ref_column], "left_anti")
+        orphan_count = orphans.count()
+        if orphan_count:
+            logger.warning(
+                "[silver] %s.%s: dropping %d row(s) with no match in %s.%s",
+                self.config.table,
+                fk.column,
+                orphan_count,
+                fk.ref_table,
+                fk.ref_column,
+            )
+            df = df.join(ref, df[fk.column] == ref[fk.ref_column], "left_semi")
+        return df
 
     def load(self, df: DataFrame) -> None:
         (
