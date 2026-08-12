@@ -184,9 +184,11 @@ next:
   `validate` for null handling, dedup, FK checks, and star-schema
   aggregation — same base class, same common libraries (`pyspark`, stdlib
   `dataclasses`/`abc`/`logging`), no new dependency per layer.
-- Covered by `tests/unit/test_base.py` and `tests/unit/test_bronze.py`, run
-  locally against `pyspark` + `delta-spark` (no live cluster needed) — see
-  "Working locally" for the version pin this requires.
+- Covered by `tests/unit/test_base.py` (local `pyspark` + `delta-spark`, no
+  live cluster needed — see "Working locally" for the version pin this
+  requires) and `tests/integration/test_bronze.py` (Databricks Connect
+  against the real workspace — see "Repo layout" for why Bronze moved off
+  local unit tests).
 
 ## Silver naming convention
 
@@ -260,11 +262,29 @@ traceability back to the raw CSVs/Postgres tables.
   `session.py` (Databricks Connect serverless session factory, used only
   by `tests/integration`)
 - `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
-  (no Databricks cluster required), run via `uv run pytest tests/unit`
+  (no Databricks cluster required), run via `uv run pytest tests/unit`.
+  Covers `base.py`/`naming.py`/`silver.py`/`profiling.py`; Bronze has no
+  unit tests (see `/tests/integration` below)
 - `/tests/integration` — tests against a real **serverless** Databricks
   cluster over Databricks Connect (`src/lakehouse/session.py`); run via the
   separate `.venv-dbconnect` env, not the default one — see "Working
-  locally"
+  locally". `test_bronze.py` is Bronze's only test coverage, deliberately
+  integration-only rather than split like Silver's local-unit +
+  read-only-integration pattern: the team has budget to test against real
+  infrastructure "for everything," and Bronze's `load()` is
+  `mode="overwrite"`, so exercising it for real (including a full `run()`
+  against the real `application_test` table) is just re-running the same
+  idempotent operation the `bronze_ingestion` Databricks Job already
+  performs — not a risky action. The idempotency/schema-change cases that
+  used to point `landing_path_override` at a local `tmp_path` now write
+  synthetic Parquet to a Unity Catalog Volume scratch path instead (the
+  remote serverless cluster can't see the local filesystem, and this
+  workspace has the public DBFS root disabled - `dbfs:/tmp/...` fails with
+  `DbfsDisabledException`, confirmed by hitting it - so a UC Volume is the
+  correct governed equivalent, not DBFS) and target a scratch table name,
+  cleaned up via the Databricks SDK's `WorkspaceClient().files` (recursive
+  delete, since the API's own `delete_directory` refuses non-empty
+  directories) after each test
 - `/docs` — architecture diagram, ER diagram for the star schema, design notes
 - `README.md` — problem statement, architecture summary, how to run
 
@@ -569,8 +589,25 @@ the live workspace - `consumer_lending_risk_lakehouse.silver` has all 8
 `tb_*` tables, verified by querying them directly afterward (row counts
 match the dry run exactly: `tb_bureau_balance` 24,179,741 rows after
 dropping the 3,120,184 orphans, `tb_application_train` 307,511 with 122
-correctly-renamed columns, etc.). Silver is done end-to-end. Next: start
-`02_gold_aggregation.py` - the star schema (`fact_application` +
+correctly-renamed columns, etc.). Silver is done end-to-end.
+
+Bronze's test coverage moved from `tests/unit/test_bronze.py` (local
+`pyspark`+`delta-spark`, synthetic data) to `tests/integration/test_bronze.py`
+(Databricks Connect, real workspace) - now that Databricks Connect access to
+the real serverless cluster exists and the team has budget to test against
+real infrastructure, there's no reason to keep validating Bronze against a
+synthetic local session instead of the real ADLS landing zone and real
+Unity Catalog `bronze` schema it actually reads/writes. Verified against
+live data: `extract()` against the real `application_test` landing Parquet
+and a full `run()` into `consumer_lending_risk_lakehouse.bronze.application_test`
+both return/land exactly 48,744 rows, matching the known real count.
+Idempotency and schema-change cases run against a scratch Unity Catalog
+Volume path/table (never the real 8) rather than DBFS - this workspace has
+the public DBFS root disabled, confirmed by actually hitting
+`DbfsDisabledException` on a first attempt - cleaned up via the Databricks
+SDK's Files API after each test.
+
+Next: start `02_gold_aggregation.py` - the star schema (`fact_application` +
 `dim_bureau`/`dim_previous_application`/`dim_installments_agg`/
 `dim_credit_card_agg`, each pre-aggregated to `SK_ID_CURR` grain per
 "Architecture"). Estimated 2-3 weeks at 5-8h/week (already running longer
