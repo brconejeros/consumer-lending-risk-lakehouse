@@ -242,7 +242,7 @@ traceability back to the raw CSVs/Postgres tables.
   - `02_gold_aggregation.py`, `03_quality_checks.py` — not yet built;
     expected to stay single notebooks, since Gold's aggregation naturally
     operates across tables at once rather than per-table like Bronze/Silver
-  - `silver_profiling/<table>.py` × 8 — same one-file-per-table pattern as
+  - `silver/profiling/<table>.py` × 8 — same one-file-per-table pattern as
     `bronze/`/`silver/`, not a pipeline stage. Each is exploratory: what
     that Bronze table is, its grain, business relevance, key predictive
     columns, and data-quality quirks, informing that table's
@@ -256,7 +256,7 @@ traceability back to the raw CSVs/Postgres tables.
   Python, no Spark import, see "Silver naming convention"), `silver.py`
   (`SilverTransformJob`/`SilverTableConfig`/`FkCheck`, wired up per-table in
   `notebooks/silver/<table>.py`), `profiling.py` (`null_rate`/
-  `fk_orphan_count`, shared by `notebooks/silver_profiling/<table>.py`),
+  `fk_orphan_count`, shared by `notebooks/silver/profiling/<table>.py`),
   `session.py` (Databricks Connect serverless session factory, used only
   by `tests/integration`)
 - `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
@@ -280,7 +280,7 @@ Validate with Delta Live Tables Expectations or Great Expectations:
   additionally nulls out known non-null "this value doesn't apply" sentinels
   per column (e.g. `application_{train,test}`'s `DAYS_EMPLOYED` uses `365243`
   for "not currently employed", affecting ~18%/~19% of rows respectively —
-  found via `notebooks/silver_profiling/application_train.py`) without
+  found via `notebooks/silver/profiling/application_train.py`) without
   dropping the row. General per-column imputation strategy beyond known
   sentinels is still Gold-layer feature engineering, not implemented here
 - foreign key integrity between Bronze tables before promoting to Silver —
@@ -526,7 +526,7 @@ All 8 tables are now wired into `SilverTransformJob`, one per-table
 notebook each under `notebooks/silver/` (mirroring `notebooks/bronze/`'s
 pattern - 8 separate files/Databricks-Job tasks rather than one script
 looping over all 8), informed by the 8 per-table `notebooks/
-silver_profiling/<table>.py` notebooks' findings (see "Silver naming
+silver/profiling/<table>.py` notebooks' findings (see "Silver naming
 convention" for the two real naming-rule misses they surfaced:
 `AMT_REQ_CREDIT_BUREAU_*` are enquiry counts despite the `AMT_` prefix, and
 `NFLAG_*` doesn't match the `FLAG_` prefix rule). `column_overrides` are
@@ -555,7 +555,7 @@ against live data again after the fix: all 8 tables' `extract()`/
 `transform()` now complete cleanly with the expected rows dropped and
 logged.
 
-Running all 8 `notebooks/silver_profiling/<table>.py` notebooks for real
+Running all 8 `notebooks/silver/profiling/<table>.py` notebooks for real
 (not just the FK spot checks) surfaced one more real issue:
 `application_{train,test}`'s `DAYS_EMPLOYED` sentinel value (`365243`,
 ~18%/~19% of rows) was passed through untouched. Fixed via a new
@@ -564,8 +564,14 @@ configured sentinel values per column without dropping the row. Verified
 against live data: 0 remaining sentinel rows post-transform, row counts
 unchanged.
 
-The `notebooks/silver/*.py` notebooks themselves (which additionally call
-`load()`, writing into the `silver` schema) still haven't been run for
-real. Next: run them for real, confirm the writes land as expected, then
-start `02_gold_aggregation.py`. Estimated 2-3 weeks at 5-8h/week (already
-running longer given the ingestion-layer detour and rebuild).
+All 8 `notebooks/silver/*.py` notebooks have now been run for real against
+the live workspace - `consumer_lending_risk_lakehouse.silver` has all 8
+`tb_*` tables, verified by querying them directly afterward (row counts
+match the dry run exactly: `tb_bureau_balance` 24,179,741 rows after
+dropping the 3,120,184 orphans, `tb_application_train` 307,511 with 122
+correctly-renamed columns, etc.). Silver is done end-to-end. Next: start
+`02_gold_aggregation.py` - the star schema (`fact_application` +
+`dim_bureau`/`dim_previous_application`/`dim_installments_agg`/
+`dim_credit_card_agg`, each pre-aggregated to `SK_ID_CURR` grain per
+"Architecture"). Estimated 2-3 weeks at 5-8h/week (already running longer
+given the ingestion-layer detour and rebuild).
