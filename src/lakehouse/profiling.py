@@ -20,8 +20,9 @@ def fk_orphan_count(
     child_df: DataFrame, child_col: str, parent_df: DataFrame, parent_col: str
 ) -> int:
     """Rows in `child_df` whose `child_col` has no match in
-    `parent_df.parent_col` - what `SilverTransformJob.validate()` will raise
-    on if this is ever non-zero."""
+    `parent_df.parent_col` - what `SilverTransformJob.transform()`'s
+    `FkCheck` handling will drop (with a logged warning) if this is
+    non-zero."""
     return child_df.join(
         parent_df, child_df[child_col] == parent_df[parent_col], "left_anti"
     ).count()

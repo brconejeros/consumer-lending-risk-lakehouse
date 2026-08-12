@@ -45,5 +45,10 @@ print(f"credit_card_balance rows with no matching previous_application.SK_ID_PRE
 # MAGIC
 # MAGIC **Data-quality watch-outs:** `AMT_RECIVABLE` is spelled that way in the
 # MAGIC source CSV (missing the second "E") - kept as-is for traceability; the
-# MAGIC mechanical rule still produces a correct `RecivableAmt`. Otherwise every
-# MAGIC column maps cleanly - no overrides needed for this table.
+# MAGIC mechanical rule still produces a correct `RecivableAmt`. Naming needs
+# MAGIC no other overrides. Referential integrity is the real watch-out here:
+# MAGIC ~28% of rows (checked above) reference a `SK_ID_PREV` that doesn't
+# MAGIC exist in `previous_application` - the highest orphan rate of any table
+# MAGIC profiled, a genuine source-data gap rather than a bug.
+# MAGIC `notebooks/silver/credit_card_balance.py`'s `FkCheck` drops those rows
+# MAGIC with a logged warning rather than failing the run.

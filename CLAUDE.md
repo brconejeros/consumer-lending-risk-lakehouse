@@ -282,7 +282,14 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 - foreign key integrity between Bronze tables before promoting to Silver —
   `FkCheck.ref_table` in `SilverTableConfig` points at the *Bronze* parent
   table specifically (not a Silver one), so every table's
-  `SilverTransformJob` can run independently, in any order
+  `SilverTransformJob` can run independently, in any order. **Not a hard
+  failure**: verified against the real dataset that a non-trivial fraction
+  of rows in `bureau_balance` (~11%), `POS_CASH_balance` (~3%),
+  `credit_card_balance` (~28%), and `installments_payments` (~9%) reference
+  a parent key that genuinely doesn't exist in Bronze — a real
+  characteristic of the Home Credit dataset, not a bug. `transform()` drops
+  those rows and logs a warning instead of raising, so a table's Silver
+  load isn't blocked by data the pipeline can't fix upstream
 
 ## Git commit conventions
 
@@ -529,11 +536,23 @@ Databricks workspace over Databricks Connect serverless compute (see
 "Working locally" for the `~/.databrickscfg` profile/version-pin setup this
 took) - confirms the real serverless session connects and that
 `SilverTransformJob`'s rename logic produces correct Silver column names
-against the real `application_train` Bronze table. The notebooks
-themselves (which additionally write to `silver` and run `FkCheck`s
-against the other 7 tables) still haven't been run for real. Next: run
-the `notebooks/silver/*.py` notebooks for real, confirm the `FkCheck`s pass
-against actual Bronze data (expected clean per Home Credit's own dataset
-consistency), then start `02_gold_aggregation.py`. Estimated 2-3 weeks at
-5-8h/week (already running longer given the ingestion-layer detour and
-rebuild).
+against the real `application_train` Bronze table.
+
+A read-only dry run of all 8 `SilverTableConfig`s against live Bronze data
+(extract + transform, no `load()`) surfaced a real design gap: `FkCheck`
+originally raised and blocked the whole table on any orphaned row, but the
+real dataset has a genuine, non-trivial orphan rate (`bureau_balance` ~11%,
+`credit_card_balance` ~28%, `POS_CASH_balance` ~3%,
+`installments_payments` ~9%) - not a bug, just how the source data is.
+Fixed by moving the FK check into `transform()` as a filter-and-warn step
+(see "Data quality") instead of a hard failure in `validate()`
+(`SilverTransformJob` no longer overrides `validate()` at all). Verified
+against live data again after the fix: all 8 tables' `extract()`/
+`transform()` now complete cleanly with the expected rows dropped and
+logged.
+
+The `notebooks/silver/*.py` notebooks themselves (which additionally call
+`load()`, writing into the `silver` schema) still haven't been run for
+real. Next: run them for real, confirm the writes land as expected, then
+start `02_gold_aggregation.py`. Estimated 2-3 weeks at 5-8h/week (already
+running longer given the ingestion-layer detour and rebuild).

@@ -57,4 +57,8 @@ print(f"payments late and/or short of the prescribed amount: {late_or_short}")
 # MAGIC the rule prefixes) - overridden to `InstalmentVersionCd`/
 # MAGIC `InstalmentNumberCnt` since they're this table's grain keys and are
 # MAGIC worth naming deliberately rather than leaving to the plain-PascalCase
-# MAGIC fallback.
+# MAGIC fallback. Referential integrity: ~9% of rows (checked above) reference
+# MAGIC a `SK_ID_PREV` that doesn't exist in `previous_application` - a genuine
+# MAGIC source-data gap, not a bug. `notebooks/silver/installments_payments.py`'s
+# MAGIC `FkCheck` drops those rows with a logged warning rather than failing
+# MAGIC the run.

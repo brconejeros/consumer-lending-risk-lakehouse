@@ -48,9 +48,13 @@ display(bureau_balance.groupBy("STATUS").count().orderBy("STATUS"))
 # MAGIC **Data-quality watch-outs:**
 # MAGIC - `STATUS` is a coded field with no prefix - overridden to `StatusCd`.
 # MAGIC - This is the table CLAUDE.md's "Data quality" FK check is written for:
-# MAGIC   every `SK_ID_BUREAU` here must exist in `bureau`. Spot-checked below
-# MAGIC   against the real Bronze data - `notebooks/silver/bureau_balance.py`
-# MAGIC   enforces this for every run via `FkCheck`.
+# MAGIC   every `SK_ID_BUREAU` here should exist in `bureau`. **It doesn't,
+# MAGIC   for a real and non-trivial fraction of rows** - spot-checked below
+# MAGIC   against live Bronze data, ~11% of rows (see the count below)
+# MAGIC   reference a `bureau` credit that doesn't exist. This is a genuine
+# MAGIC   characteristic of the source dataset, not a bug -
+# MAGIC   `notebooks/silver/bureau_balance.py`'s `FkCheck` drops those rows
+# MAGIC   with a logged warning rather than failing the run.
 
 # COMMAND ----------
 
