@@ -22,11 +22,17 @@ COLUMN_OVERRIDES = {
     "AMT_REQ_CREDIT_BUREAU_YEAR": "ReqCreditBureauYearCnt",
 }
 
+# DAYS_EMPLOYED uses 365243 (~1000 years) as a "not currently employed"
+# sentinel instead of a real day count - affects ~18% of rows. Nulled out
+# rather than dropped, since the row itself is still meaningful.
+SENTINEL_NULLS = {"EmployedDays": (365243,)}
+
 SilverTransformJob(
     spark,
     SilverTableConfig(
         table="application_train",
         column_overrides=COLUMN_OVERRIDES,
+        sentinel_nulls=SENTINEL_NULLS,
         dedup_keys=("CurrId",),
     ),
 ).run()

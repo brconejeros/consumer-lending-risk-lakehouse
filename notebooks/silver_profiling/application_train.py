@@ -69,8 +69,11 @@ display(application_train.limit(5))
 # MAGIC   them to `...Cnt`.
 # MAGIC - All `DAYS_*` columns are negative day-counts relative to the
 # MAGIC   application date, not calendar dates - `DAYS_EMPLOYED` in particular
-# MAGIC   has a well-known sentinel value (365243) for "not currently employed"
-# MAGIC   that isn't a real day count.
+# MAGIC   has a well-known sentinel value (365243, ~18% of rows here) for "not
+# MAGIC   currently employed" that isn't a real day count.
+# MAGIC   `notebooks/silver/application_train.py` nulls it out via
+# MAGIC   `SilverTableConfig.sentinel_nulls` rather than dropping the row or
+# MAGIC   leaving the nonsense value in place.
 
 # COMMAND ----------
 

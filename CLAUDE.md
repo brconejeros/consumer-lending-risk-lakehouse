@@ -276,9 +276,13 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 - non-null checks on critical fields — in Silver today, scoped to each
   table's grain columns (`SilverTableConfig.dedup_keys` doubles as the
   null-check list, since a row with a null grain key isn't a meaningful row
-  either — see `src/lakehouse/silver.py`). Per-column business-rule null
-  handling beyond that is Gold-layer feature engineering, not implemented
-  here
+  either — see `src/lakehouse/silver.py`). `SilverTableConfig.sentinel_nulls`
+  additionally nulls out known non-null "this value doesn't apply" sentinels
+  per column (e.g. `application_{train,test}`'s `DAYS_EMPLOYED` uses `365243`
+  for "not currently employed", affecting ~18%/~19% of rows respectively —
+  found via `notebooks/silver_profiling/application_train.py`) without
+  dropping the row. General per-column imputation strategy beyond known
+  sentinels is still Gold-layer feature engineering, not implemented here
 - foreign key integrity between Bronze tables before promoting to Silver —
   `FkCheck.ref_table` in `SilverTableConfig` points at the *Bronze* parent
   table specifically (not a Silver one), so every table's
@@ -550,6 +554,15 @@ Fixed by moving the FK check into `transform()` as a filter-and-warn step
 against live data again after the fix: all 8 tables' `extract()`/
 `transform()` now complete cleanly with the expected rows dropped and
 logged.
+
+Running all 8 `notebooks/silver_profiling/<table>.py` notebooks for real
+(not just the FK spot checks) surfaced one more real issue:
+`application_{train,test}`'s `DAYS_EMPLOYED` sentinel value (`365243`,
+~18%/~19% of rows) was passed through untouched. Fixed via a new
+`SilverTableConfig.sentinel_nulls` field - `transform()` nulls out
+configured sentinel values per column without dropping the row. Verified
+against live data: 0 remaining sentinel rows post-transform, row counts
+unchanged.
 
 The `notebooks/silver/*.py` notebooks themselves (which additionally call
 `load()`, writing into the `silver` schema) still haven't been run for
