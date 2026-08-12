@@ -50,6 +50,31 @@ def test_transform_applies_type_casts(spark):
     assert dict(result.dtypes)["CurrId"] == "int"
 
 
+def test_transform_nulls_out_configured_sentinel_values(spark):
+    df = spark.createDataFrame([(1, 365243), (2, -637)], ["SK_ID_CURR", "DAYS_EMPLOYED"])
+    config = SilverTableConfig(
+        table="application_train",
+        sentinel_nulls={"EmployedDays": (365243,)},
+    )
+    job = SilverTransformJob(spark, config)
+
+    result = job.transform(df).collect()
+
+    values = {row["CurrId"]: row["EmployedDays"] for row in result}
+    assert values[1] is None
+    assert values[2] == -637
+
+
+def test_transform_keeps_row_when_sentinel_column_has_a_real_value(spark):
+    df = spark.createDataFrame([(1, -637)], ["SK_ID_CURR", "DAYS_EMPLOYED"])
+    config = SilverTableConfig(table="application_train", sentinel_nulls={"EmployedDays": (365243,)})
+    job = SilverTransformJob(spark, config)
+
+    result = job.transform(df)
+
+    assert result.count() == 1
+
+
 def test_transform_dedupes_on_configured_keys(spark):
     df = spark.createDataFrame(
         [(1, 100), (1, 999), (2, 200)], ["SK_ID_CURR", "AMT_CREDIT"]

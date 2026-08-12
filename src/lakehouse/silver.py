@@ -26,6 +26,7 @@ import logging
 from dataclasses import dataclass, field
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from src.lakehouse.base import LakehouseLayerJob
 from src.lakehouse.naming import to_silver_column_name, to_silver_table_name
@@ -48,11 +49,11 @@ class FkCheck:
 class SilverTableConfig:
     """Everything a Silver job needs to know about one table.
 
-    `column_overrides`/`type_casts`/`dedup_keys` all key off the *Silver*
-    (post-rename) column names, since `transform` renames before applying
-    them. `dedup_keys` doubles as the null-handling policy: a table's grain
-    columns must be non-null for a row to be meaningful, so `transform`
-    drops null-grain-key rows before deduping on them.
+    `column_overrides`/`type_casts`/`dedup_keys`/`sentinel_nulls` all key
+    off the *Silver* (post-rename) column names, since `transform` renames
+    before applying them. `dedup_keys` doubles as the null-handling policy:
+    a table's grain columns must be non-null for a row to be meaningful, so
+    `transform` drops null-grain-key rows before deduping on them.
     """
 
     table: str
@@ -61,6 +62,11 @@ class SilverTableConfig:
     silver_schema: str = "silver"
     column_overrides: dict[str, str] = field(default_factory=dict)
     type_casts: dict[str, str] = field(default_factory=dict)
+    sentinel_nulls: dict[str, tuple] = field(default_factory=dict)
+    """Column -> values that are actually null in disguise (e.g. Home
+    Credit's `DAYS_EMPLOYED` uses `365243` as a "not employed" sentinel
+    instead of a real day count) - replaced with real nulls in `transform`,
+    not dropped as rows."""
     dedup_keys: tuple[str, ...] = ()
     fk_checks: tuple[FkCheck, ...] = ()
     source_override: str | None = None
@@ -78,8 +84,8 @@ class SilverTableConfig:
 
 
 class SilverTransformJob(LakehouseLayerJob):
-    """Bronze Delta -> Silver Delta: rename, cast, drop FK-orphaned rows,
-    dedup."""
+    """Bronze Delta -> Silver Delta: rename, cast, null out sentinels, drop
+    FK-orphaned rows, dedup."""
 
     layer = "silver"
 
@@ -101,6 +107,12 @@ class SilverTransformJob(LakehouseLayerJob):
 
         for column, cast_type in self.config.type_casts.items():
             df = df.withColumn(column, df[column].cast(cast_type))
+
+        for column, sentinels in self.config.sentinel_nulls.items():
+            df = df.withColumn(
+                column,
+                F.when(df[column].isin(list(sentinels)), None).otherwise(df[column]),
+            )
 
         if self.config.dedup_keys:
             df = df.dropna(subset=list(self.config.dedup_keys))
