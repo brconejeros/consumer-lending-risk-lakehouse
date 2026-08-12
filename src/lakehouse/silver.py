@@ -46,14 +46,29 @@ class FkCheck:
 
 
 @dataclass(frozen=True)
+class CodeDescription:
+    """Adds `target_column` alongside `source_column`, decoding its coded
+    values into human-readable text via `mapping` - the coded column stays
+    as-is, this doesn't replace it. Only worth adding where the codes have
+    a genuinely documented, non-obvious meaning (e.g. `bureau_balance`'s
+    `STATUS`); most coded/categorical Silver columns are already
+    human-readable text and don't need this."""
+
+    source_column: str
+    target_column: str
+    mapping: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SilverTableConfig:
     """Everything a Silver job needs to know about one table.
 
-    `column_overrides`/`type_casts`/`dedup_keys`/`sentinel_nulls` all key
-    off the *Silver* (post-rename) column names, since `transform` renames
-    before applying them. `dedup_keys` doubles as the null-handling policy:
-    a table's grain columns must be non-null for a row to be meaningful, so
-    `transform` drops null-grain-key rows before deduping on them.
+    `column_overrides`/`type_casts`/`dedup_keys`/`sentinel_nulls`/
+    `code_descriptions` all key off the *Silver* (post-rename) column
+    names, since `transform` renames before applying them. `dedup_keys`
+    doubles as the null-handling policy: a table's grain columns must be
+    non-null for a row to be meaningful, so `transform` drops
+    null-grain-key rows before deduping on them.
     """
 
     table: str
@@ -67,6 +82,7 @@ class SilverTableConfig:
     Credit's `DAYS_EMPLOYED` uses `365243` as a "not employed" sentinel
     instead of a real day count) - replaced with real nulls in `transform`,
     not dropped as rows."""
+    code_descriptions: tuple[CodeDescription, ...] = ()
     dedup_keys: tuple[str, ...] = ()
     fk_checks: tuple[FkCheck, ...] = ()
     source_override: str | None = None
@@ -84,8 +100,8 @@ class SilverTableConfig:
 
 
 class SilverTransformJob(LakehouseLayerJob):
-    """Bronze Delta -> Silver Delta: rename, cast, null out sentinels, drop
-    FK-orphaned rows, dedup."""
+    """Bronze Delta -> Silver Delta: rename, cast, null out sentinels, add
+    decoded code-description columns, drop FK-orphaned rows, dedup."""
 
     layer = "silver"
 
@@ -114,6 +130,9 @@ class SilverTransformJob(LakehouseLayerJob):
                 F.when(df[column].isin(list(sentinels)), None).otherwise(df[column]),
             )
 
+        for cd in self.config.code_descriptions:
+            df = self._add_code_description(df, cd)
+
         if self.config.dedup_keys:
             df = df.dropna(subset=list(self.config.dedup_keys))
 
@@ -121,6 +140,10 @@ class SilverTransformJob(LakehouseLayerJob):
             df = self._drop_fk_orphans(df, fk)
 
         return df.dropDuplicates(list(self.config.dedup_keys) or None)
+
+    def _add_code_description(self, df: DataFrame, cd: CodeDescription) -> DataFrame:
+        mapping_col = F.create_map([F.lit(x) for pair in cd.mapping.items() for x in pair])
+        return df.withColumn(cd.target_column, mapping_col[df[cd.source_column]])
 
     def _drop_fk_orphans(self, df: DataFrame, fk: FkCheck) -> DataFrame:
         ref = self.spark.table(fk.ref_table)

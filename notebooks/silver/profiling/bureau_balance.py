@@ -47,6 +47,11 @@ display(bureau_balance.groupBy("STATUS").count().orderBy("STATUS"))
 # MAGIC
 # MAGIC **Data-quality watch-outs:**
 # MAGIC - `STATUS` is a coded field with no prefix - overridden to `StatusCd`.
+# MAGIC   Its 8 codes have a documented per-value meaning (see
+# MAGIC   `docs/data_dictionary.md`), so `notebooks/silver/bureau_balance.py`
+# MAGIC   adds a decoded `StatusDesc` column alongside it via
+# MAGIC   `SilverTableConfig.code_descriptions` - most other coded/categorical
+# MAGIC   Silver columns are already human-readable text and don't need this.
 # MAGIC - This is the table CLAUDE.md's "Data quality" FK check is written for:
 # MAGIC   every `SK_ID_BUREAU` here should exist in `bureau`. **It doesn't,
 # MAGIC   for a real and non-trivial fraction of rows** - spot-checked below

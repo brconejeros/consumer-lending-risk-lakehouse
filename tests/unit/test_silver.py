@@ -1,4 +1,4 @@
-from src.lakehouse.silver import FkCheck, SilverTableConfig, SilverTransformJob
+from src.lakehouse.silver import CodeDescription, FkCheck, SilverTableConfig, SilverTransformJob
 
 
 def test_config_derives_source_and_target_table():
@@ -73,6 +73,45 @@ def test_transform_keeps_row_when_sentinel_column_has_a_real_value(spark):
     result = job.transform(df)
 
     assert result.count() == 1
+
+
+def test_transform_adds_code_description_column(spark):
+    df = spark.createDataFrame([("BUR1", "0"), ("BUR2", "C")], ["SK_ID_BUREAU", "STATUS"])
+    config = SilverTableConfig(
+        table="bureau_balance",
+        column_overrides={"STATUS": "StatusCd"},
+        code_descriptions=(
+            CodeDescription(
+                source_column="StatusCd",
+                target_column="StatusDesc",
+                mapping={"0": "No DPD", "C": "Closed"},
+            ),
+        ),
+    )
+    job = SilverTransformJob(spark, config)
+
+    result = job.transform(df).collect()
+
+    values = {row["BureauId"]: row["StatusDesc"] for row in result}
+    assert values["BUR1"] == "No DPD"
+    assert values["BUR2"] == "Closed"
+
+
+def test_transform_keeps_original_coded_column_alongside_description(spark):
+    df = spark.createDataFrame([("BUR1", "0")], ["SK_ID_BUREAU", "STATUS"])
+    config = SilverTableConfig(
+        table="bureau_balance",
+        column_overrides={"STATUS": "StatusCd"},
+        code_descriptions=(
+            CodeDescription(source_column="StatusCd", target_column="StatusDesc", mapping={"0": "No DPD"}),
+        ),
+    )
+    job = SilverTransformJob(spark, config)
+
+    result = job.transform(df)
+
+    assert "StatusCd" in result.columns
+    assert result.collect()[0]["StatusCd"] == "0"
 
 
 def test_transform_dedupes_on_configured_keys(spark):
