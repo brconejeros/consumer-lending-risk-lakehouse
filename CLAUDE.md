@@ -564,8 +564,14 @@ configured sentinel values per column without dropping the row. Verified
 against live data: 0 remaining sentinel rows post-transform, row counts
 unchanged.
 
-The `notebooks/silver/*.py` notebooks themselves (which additionally call
-`load()`, writing into the `silver` schema) still haven't been run for
-real. Next: run them for real, confirm the writes land as expected, then
-start `02_gold_aggregation.py`. Estimated 2-3 weeks at 5-8h/week (already
-running longer given the ingestion-layer detour and rebuild).
+All 8 `notebooks/silver/*.py` notebooks have now been run for real against
+the live workspace - `consumer_lending_risk_lakehouse.silver` has all 8
+`tb_*` tables, verified by querying them directly afterward (row counts
+match the dry run exactly: `tb_bureau_balance` 24,179,741 rows after
+dropping the 3,120,184 orphans, `tb_application_train` 307,511 with 122
+correctly-renamed columns, etc.). Silver is done end-to-end. Next: start
+`02_gold_aggregation.py` - the star schema (`fact_application` +
+`dim_bureau`/`dim_previous_application`/`dim_installments_agg`/
+`dim_credit_card_agg`, each pre-aggregated to `SK_ID_CURR` grain per
+"Architecture"). Estimated 2-3 weeks at 5-8h/week (already running longer
+given the ingestion-layer detour and rebuild).

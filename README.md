@@ -105,8 +105,9 @@ CLAUDE.md     → full project/architecture reference
    tables, one notebook per table.
 4. **Silver**: run the 8 `notebooks/silver/<table>.py` notebooks (or wire
    them into a `silver_transform` Databricks Job, mirroring `bronze_ingestion`)
-   — cleans types, nulls, dedups, validates FKs against Bronze, one notebook
-   per table.
+   — cleans types, nulls sentinels, dedups, drops FK-orphaned rows
+   (dropped with a warning, not a hard failure — see CLAUDE.md "Data
+   quality"), one notebook per table.
 5. Open `/notebooks` in the Databricks workspace and run the rest, attached
    to a running cluster/warehouse:
    - `02_gold_aggregation.py` — builds the star schema *(pending)*
@@ -122,7 +123,8 @@ CLAUDE.md     → full project/architecture reference
       Parquet in ADLS Gen2
 - [x] Bronze ingestion (Parquet → Delta) — all 8 tables loaded and verified
       against known row counts
-- [ ] Silver transformation + referential integrity checks
+- [x] Silver transformation + referential integrity checks — all 8 tables
+      loaded and verified against real Bronze data
 - [ ] Gold star schema
 - [ ] Data quality checks
 - [ ] Dashboard (Power BI / Databricks SQL) with 3+ visualizations
