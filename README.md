@@ -84,7 +84,8 @@ notebooks/        → pipeline notebooks, run in order
   bronze/<table>.py       → one notebook per table, instantiates BronzeIngestionJob
   silver/<table>.py       → one notebook per table, instantiates SilverTransformJob
   silver/profiling/<table>.py → one notebook per table, exploratory (not a pipeline stage)
-  02_gold_aggregation.py, 03_quality_checks.py
+  gold/<output>.py       → one notebook per output, instantiates a GoldAggregationJob subclass
+  03_quality_checks.py
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
 tests/unit/        → local pyspark+delta-spark tests, no cluster needed
 tests/integration/ → Databricks Connect tests against a real serverless cluster
@@ -108,9 +109,11 @@ CLAUDE.md     → full project/architecture reference
    — cleans types, nulls sentinels, dedups, drops FK-orphaned rows
    (dropped with a warning, not a hard failure — see CLAUDE.md "Data
    quality"), one notebook per table.
-5. Open `/notebooks` in the Databricks workspace and run the rest, attached
+5. **Gold**: run the 5 `notebooks/gold/<output>.py` notebooks — builds the
+   star schema (`fact_application` + 4 dimensions, each pre-aggregated to
+   `SK_ID_CURR`).
+6. Open `/notebooks` in the Databricks workspace and run the rest, attached
    to a running cluster/warehouse:
-   - `02_gold_aggregation.py` — builds the star schema *(pending)*
    - `03_quality_checks.py` — data quality expectations *(pending)*
 
 ## Status
@@ -125,7 +128,8 @@ CLAUDE.md     → full project/architecture reference
       against known row counts
 - [x] Silver transformation + referential integrity checks — all 8 tables
       loaded and verified against real Bronze data
-- [ ] Gold star schema
+- [x] Gold star schema — `fact_application` + 4 dimensions loaded and
+      verified against real Silver data
 - [ ] Data quality checks
 - [ ] Dashboard (Power BI / Databricks SQL) with 3+ visualizations
 - [ ] Architecture + ER diagrams in `/docs`

@@ -147,7 +147,10 @@ categoricals), de-duplication, referential integrity checks across tables (e.g. 
 satellite tables must exist in `previous_application`).
 
 **Gold (star schema)** — grain is 1 row per `SK_ID_CURR`:
-- `fact_application` — one row per applicant
+- `fact_application` — one row per applicant, unioning `tb_application_train`
+  and `tb_application_test` (`SampleTypeCd` = `TRAIN`/`TEST`, `Target`
+  nullable since test rows have none) so every applicant - labeled or not -
+  joins to every dimension the same way
 - `dim_bureau` — aggregated bureau history per applicant
 - `dim_previous_application` — aggregated prior Home Credit applications per applicant
 - `dim_installments_agg` — aggregated installment payment behavior per applicant
@@ -155,6 +158,9 @@ satellite tables must exist in `previous_application`).
 
 Each dimension is pre-aggregated to `SK_ID_CURR` grain (count, sum, mean, max of
 delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
+Count/sum aggregates are `0` (not `NULL`) for an applicant with no rows in a
+given satellite table; avg/min/max stay `NULL` in that case, since there's
+nothing to average.
 
 ## OOP ingestion framework (`src/lakehouse`)
 
@@ -249,9 +255,17 @@ traceability back to the raw CSVs/Postgres tables.
     `fk_checks` reads Bronze rather than Silver (see "Data quality"), so
     every table's job is independent - no run-order dependency between
     these 8 files, same as Bronze's parallel task boundaries
-  - `02_gold_aggregation.py`, `03_quality_checks.py` — not yet built;
-    expected to stay single notebooks, since Gold's aggregation naturally
-    operates across tables at once rather than per-table like Bronze/Silver
+  - `gold/<output>.py` × 5 (`fact_application.py`, `dim_bureau.py`,
+    `dim_previous_application.py`, `dim_installments_agg.py`,
+    `dim_credit_card_agg.py`) — same thin-wrapper pattern as `bronze/`/
+    `silver/`: each instantiates a `GoldTableConfig` and calls its job
+    class's `.run()`. All 5 outputs are independent (none reads another
+    Gold table, only Silver), so this follows the established
+    one-file-per-output convention rather than one monolithic script -
+    an earlier draft of this doc assumed Gold would "stay single
+    notebooks" before the design confirmed the outputs don't depend on
+    each other
+  - `03_quality_checks.py` — not yet built
   - `silver/profiling/<table>.py` × 8 — same one-file-per-table pattern as
     `bronze/`/`silver/`, not a pipeline stage. Each is exploratory: what
     that Bronze table is, its grain, business relevance, key predictive
@@ -267,12 +281,16 @@ traceability back to the raw CSVs/Postgres tables.
   (`SilverTransformJob`/`SilverTableConfig`/`FkCheck`, wired up per-table in
   `notebooks/silver/<table>.py`), `profiling.py` (`null_rate`/
   `fk_orphan_count`, shared by `notebooks/silver/profiling/<table>.py`),
-  `session.py` (Databricks Connect serverless session factory, used only
-  by `tests/integration`)
+  `gold.py` (`GoldAggregationJob` shared base + `GoldTableConfig`, with
+  one small subclass per Gold output - `FactApplicationJob`/
+  `DimBureauJob`/`DimPreviousApplicationJob`/`DimInstallmentsAggJob`/
+  `DimCreditCardAggJob` - wired up per-output in `notebooks/gold/
+  <output>.py`), `session.py` (Databricks Connect serverless session
+  factory, used only by `tests/integration`)
 - `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
   (no Databricks cluster required), run via `uv run pytest tests/unit`.
-  Covers `base.py`/`naming.py`/`silver.py`/`profiling.py`; Bronze has no
-  unit tests (see `/tests/integration` below)
+  Covers `base.py`/`naming.py`/`silver.py`/`profiling.py`/`gold.py`; Bronze
+  has no unit tests (see `/tests/integration` below)
 - `/tests/integration` — tests against a real **serverless** Databricks
   cluster over Databricks Connect (`src/lakehouse/session.py`); run via the
   separate `.venv-dbconnect` env, not the default one — see "Working
@@ -628,8 +646,31 @@ the public DBFS root disabled, confirmed by actually hitting
 `DbfsDisabledException` on a first attempt - cleaned up via the Databricks
 SDK's Files API after each test.
 
-Next: start `02_gold_aggregation.py` - the star schema (`fact_application` +
-`dim_bureau`/`dim_previous_application`/`dim_installments_agg`/
-`dim_credit_card_agg`, each pre-aggregated to `SK_ID_CURR` grain per
-"Architecture"). Estimated 2-3 weeks at 5-8h/week (already running longer
-given the ingestion-layer detour and rebuild).
+The Gold star schema is built and live: `src/lakehouse/gold.py`
+(`GoldAggregationJob` shared base + 5 small subclasses, one per output -
+see "Repo layout"), wired up one per notebook under `notebooks/gold/
+<output>.py`. `dim_bureau` and `dim_previous_application` each do a
+2-step rollup (`bureau_balance` → per-`BureauId` signal → per-`CurrId`;
+`POS_CASH_balance` → per-`PrevId` signal → per-`CurrId`) since their
+history tables sit a grain below the parent they roll into.
+`fact_application` unions `tb_application_train`/`tb_application_test`
+with a nullable `Target` and `SampleTypeCd`, per "Architecture".
+
+Verified against live data before and after writing: dry-run
+`extract()`/`transform()` row counts matched hand predictions exactly
+(`fact_application` = 307,511 + 48,744 = 356,255), and a spot-check of one
+real applicant's `dim_bureau` row (8 raw `bureau` rows, 3 active/5 closed,
+`CreditSumAmt` summing to 1,285,239.06) matched the aggregate exactly. All
+5 notebooks then run for real: `consumer_lending_risk_lakehouse.gold` now
+has `fact_application` (356,255 rows), `dim_bureau` (305,811),
+`dim_previous_application` (338,857), `dim_installments_agg` (336,935),
+and `dim_credit_card_agg` (92,447) - row counts match the dry run exactly.
+
+The feature set per dimension is a reasonable first pass (counts, sums,
+means, max delinquency per "Architecture"), not exhaustive feature
+engineering - real modeling work will likely want more later.
+
+Next: `03_quality_checks.py` (data quality expectations), then the ER
+diagram and Power BI dashboard per "Completion criteria". Estimated 2-3
+weeks at 5-8h/week (already running longer given the ingestion-layer
+detour and rebuild).
