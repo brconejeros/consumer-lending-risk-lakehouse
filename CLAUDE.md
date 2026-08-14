@@ -404,9 +404,15 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 Operational details for resuming work in a fresh session - not architecture,
 just "how do I actually run the next command."
 
-- **Tools live in `~/.local/bin`, not on PATH by default** - `uv`, `terraform`,
-  `gh`, `az`, `databricks` were all installed there (no sudo on this machine).
-  Every fresh shell needs `export PATH="$HOME/.local/bin:$PATH"` first.
+- **Tools live in `~/.local/bin`, not on PATH by default** - on the Linux/WSL
+  dev environment this was originally written from, `uv`, `terraform`, `gh`,
+  `az`, `databricks` were all installed there (no sudo on that machine).
+  Every fresh shell needs `export PATH="$HOME/.local/bin:$PATH"` first. **A
+  Windows machine is a different story** - confirmed on one that only had
+  `claude.exe`/`gh.exe`/Python launchers there, with `terraform`/`az`/
+  `databricks` missing entirely. Check with `which <tool>` rather than
+  assuming either environment; install what's missing (e.g. on Windows,
+  `winget install Databricks.DatabricksCLI` for the Databricks CLI).
 - **Real secrets already exist on disk, gitignored** - don't ask "what's the
   password," read the file:
   - `infra/terraform/.env` - `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/
@@ -416,12 +422,30 @@ just "how do I actually run the next command."
     admin IP.
   - `infra/terraform/data-factory/terraform.tfvars` - landing storage account
     name, Postgres admin password (must match platform's).
-  - `~/.databrickscfg` - a Databricks PAT for the `databricks` CLI (SQL
-    grants, warehouse start/stop, Job runs).
-- **`az`/`gh`/`databricks` auth were all set up interactively** (browser
-  device-code flows) - if a fresh session hits auth errors from any of them,
-  that's expected; these can't be restarted programmatically. Ask the user to
-  re-run `az login` / `gh auth login`, or regenerate the Databricks PAT.
+  - `~/.databrickscfg` - may already have unrelated profiles from other
+    projects/workspaces (confirmed once: a `DEFAULT`/named profile pointing
+    at a completely different GCP-hosted workspace) - **don't assume an
+    existing profile is this project's.** This project's real Azure
+    Databricks workspace is `https://adb-7405619456327656.16.azuredatabricks.net`;
+    the profile authenticated against it is named `azure`, set up via
+    `databricks auth login --host https://adb-7405619456327656.16.azuredatabricks.net
+    --profile azure` (browser OAuth, not a PAT). If that profile is missing
+    on a fresh machine, that command recreates it - it just needs the
+    `databricks` CLI installed first (see above) and the user to complete
+    the browser sign-in themselves.
+- **`az`/`gh` auth were set up interactively** (browser device-code flows) -
+  if a fresh session hits auth errors from either, that's expected; these
+  can't be restarted programmatically. Ask the user to re-run `az login` /
+  `gh auth login`.
+- **A freshly-installed CLI may not resolve by bare name even after
+  install** - on Windows, a package manager (e.g. `winget`) can register a
+  PATH entry in the registry without the currently-running terminal process
+  picking it up - confirmed: opening a *new tab/window* in the same
+  already-running terminal app still used the stale PATH, because the host
+  app cached its environment at its own launch time, not the tab's. Closing
+  and fully restarting the terminal *application* (not just its windows)
+  fixed it; the installed binary's full path always works as a fallback
+  in the meantime (e.g. via `winget list --id <pkg>` to locate it).
 - **`pyspark` is pinned to `==3.5.3`, not just `<3.6`** - newer 3.5.x patch
   releases (verified broken: 3.5.9) fail every `delta-spark==3.2.1`
   `saveAsTable(mode="overwrite")` locally with `AnalysisException: Table ...
@@ -442,12 +466,11 @@ just "how do I actually run the next command."
   `.venv-dbconnect/bin/pytest tests/integration` (`.venv-dbconnect/Scripts/pytest.exe`
   on Windows) for the serverless-cluster tests, vs. `uv run pytest
   tests/unit` for the local ones. Auth: `tests/integration/conftest.py`
-  reads the profile name from the `DATABRICKS_CONFIG_PROFILE` env var (falls
-  back to the SDK's own default-profile resolution if unset) rather than a
-  hardcoded name - point it at whichever `~/.databrickscfg` profile is
-  authenticated against this project's actual **Azure** Databricks
-  workspace, via `databricks auth login --host <workspace-url> --profile
-  <name>` (browser OAuth, no CLI installed on a fresh machine by default).
+  reads the profile name from the `DATABRICKS_CONFIG_PROFILE` env var
+  (falls back to the SDK's own default-profile resolution if unset) rather
+  than a hardcoded name - set it to `azure` (see the `~/.databrickscfg`
+  bullet above for what that profile is and how to recreate it if it's
+  missing).
 - **`databricks-connect` is pinned to `==18.3` on Python 3.12** (both set in
   `scripts/setup_dbconnect_env.sh`), not latest/whatever Python `uv venv`
   defaults to - verified broken: `19.0.0` on Python 3.13 fails every
