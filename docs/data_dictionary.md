@@ -290,21 +290,41 @@ convention) - the table rows above use the real name.
 
 ## Notes for Silver/Gold work
 
+Silver and Gold are both built now — this section originally read as
+forward-looking planning notes written before either existed; updated below
+to reflect what was actually implemented and found.
+
 - Grain per table: `application_{train|test}` and `bureau` are keyed at
   `SK_ID_CURR`; `bureau_balance` is keyed at `SK_ID_BUREAU` + `MONTHS_BALANCE`;
   `POS_CASH_balance`, `credit_card_balance`, `installments_payments` are keyed
   at `SK_ID_PREV` + `MONTHS_BALANCE`/installment number; `previous_application`
   is keyed at `SK_ID_PREV`.
-- Referential integrity to check in Silver (per [CLAUDE.md](../CLAUDE.md) "Data
-  quality"): every `SK_ID_BUREAU` in `bureau_balance` must exist
-  in `bureau`; every `SK_ID_PREV` in `POS_CASH_balance`,
-  `credit_card_balance`, and `installments_payments` must exist in
-  `previous_application`.
-- All `DAYS_*` fields are negative integers counted backward from the current
-  application date (not calendar dates) — plan Silver-layer conversions
-  (e.g. to an approximate age or duration) accordingly rather than treating
-  them as literal dates.
+- Referential integrity, implemented via `SilverTableConfig.fk_checks`
+  (`src/lakehouse/silver.py`) — **not** a hard failure: the real dataset
+  has a genuine, non-trivial orphan rate (`bureau_balance` ~11%,
+  `credit_card_balance` ~28%, `POS_CASH_balance` ~3%,
+  `installments_payments` ~9%), so orphaned rows get dropped with a logged
+  warning instead of blocking the table's load. See CLAUDE.md's "Data
+  quality" section for the exact numbers and reasoning.
+- All `DAYS_*` fields are negative integers counted backward from the
+  current application date (not calendar dates), decoded into Silver's
+  `Days`-suffixed columns accordingly. One had a real data-quality issue
+  worth knowing about: `DAYS_EMPLOYED` uses `365243` (~1000 years) as a
+  "not currently employed" sentinel, affecting ~18%/~19% of
+  `application_{train,test}` rows — nulled out in Silver via
+  `SilverTableConfig.sentinel_nulls`, not treated as a real day count.
 - `_AVG` / `_MODE` / `_MEDI` suffixes on the building-info block in
   `application_{train|test}` are three normalized views (average, modus,
-  median) of the same set of ~20 underlying building attributes — worth
-  aggregating/selecting as a block rather than column-by-column in Gold.
+  median) of the same set of ~20 underlying building attributes. Gold's
+  `fact_application` passes them through individually rather than
+  aggregating them as a block — `fact_application` stays at the same grain
+  as `application_{train|test}` (1 row per applicant), so there's no grain
+  reduction to aggregate against. Combining them into fewer features (e.g.
+  via PCA) would be feature-engineering work for a later modeling step,
+  not something the star schema itself does.
+- `bureau_balance.STATUS` has a documented, non-obvious per-code meaning
+  (the `0`-`5`/`C`/`X` DPD buckets spelled out above) — decoded into a
+  `StatusDesc` column alongside the coded `StatusCd` in Silver via
+  `SilverTableConfig.code_descriptions`. Every other coded/categorical
+  Silver column was checked for the same pattern; none had both a
+  non-obvious code and a documented meaning to decode.
