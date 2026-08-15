@@ -17,18 +17,27 @@ resource "azurerm_data_factory_pipeline" "bronze_landing" {
   name            = "copy_postgres_to_landing"
   data_factory_id = azurerm_data_factory.main.id
 
-  # One ForEach (isSequential = true - small tables, and this project has
-  # already been burned once by concurrency-related resource exhaustion with
-  # the old Airbyte setup; sequential is the boring, debuggable choice)
-  # wrapping one parameterized Copy activity. ADF's activity graph isn't
-  # fully modeled as typed HCL, so this is opaque JSON to Terraform - real
-  # validation only happens against the live ADF REST API on first apply.
+  # One ForEach wrapping one parameterized Copy activity. ADF's activity
+  # graph isn't fully modeled as typed HCL, so this is opaque JSON to
+  # Terraform - real validation only happens against the live ADF REST API
+  # on first apply.
+  #
+  # isSequential = false with a batchCount cap (not unlimited parallelism):
+  # originally sequential, reacting to the old Airbyte setup's
+  # concurrency-driven OOM failures on self-hosted sync pods - a
+  # resource-constrained-compute failure mode that doesn't transfer to
+  # ADF's Copy Activity, which is fully managed and DIU-scaled, not running
+  # on a memory-capped VM. Capping at 4 (rather than ADF's own 50-way
+  # default under isSequential=false) keeps most of the speed-up while
+  # staying the "boring, debuggable" choice this project has favored since
+  # that Airbyte experience.
   activities_json = jsonencode([
     {
       name = "ForEachBronzeTable"
       type = "ForEach"
       typeProperties = {
-        isSequential = true
+        isSequential = false
+        batchCount   = 4
         items = {
           value = "@json('${jsonencode(local.bronze_tables)}')"
           type  = "Expression"
