@@ -139,10 +139,10 @@ of the speed-up while keeping some throttling.
 (`notebooks/bronze/<table>.py`) reads that table's Parquet folder and writes it
 into Unity Catalog's `bronze` schema as a Delta table via `saveAsTable(...,
 mode="overwrite")` — a full overwrite each run, not incremental/merge, since
-there's no CDC/incremental state to track (see "Future enhancements"). A
-Databricks Job (`bronze_ingestion`) runs `00_setup.sql` first, then all 8
-per-table notebooks in parallel (independent of each other, only depending on
-setup).
+there's no CDC/incremental state to track (see "Future enhancements"). Run as
+the first task of that table's `pipeline_<table>` Databricks Job (see
+"Orchestration" below) — the old single `bronze_ingestion` Job that ran all 8
+tables' Bronze notebooks together has been retired.
 
 The read/write logic itself lives in one class, `BronzeIngestionJob`
 (`src/lakehouse/bronze.py`), not copy-pasted across the 8 notebooks — see
@@ -265,8 +265,9 @@ next:
   `BronzeTableConfig` frozen dataclass that derives `landing_path` and
   `target_table` from just a table name.
 - This resolves the tension with "Deliberately 8 separate files" below: the
-  **notebooks stay 8 separate files** (so the Databricks Job still gets 8
-  independent, parallel task boundaries) — they just each instantiate the
+  **notebooks stay 8 separate files** (so each table's `pipeline_<table>`
+  Databricks Job gets its own independent task boundary) — they just each
+  instantiate the
   same `BronzeIngestionJob` with their own `BronzeTableConfig(table=...)`
   instead of repeating the read/write cell. What's shared is the *class*, not
   a loop driving all 8 tables from one script.
@@ -407,7 +408,10 @@ traceability back to the raw CSVs/Postgres tables.
   cleaned up via the Databricks SDK's `WorkspaceClient().files` (recursive
   delete, since the API's own `delete_directory` refuses non-empty
   directories) after each test
-- `/docs` — architecture diagram, ER diagram for the star schema, design notes
+- `/docs` — `data_dictionary.md` (column-level reference for all 8 source
+  tables, table relationships, Silver/Gold design notes); an architecture
+  diagram and ER diagram for the star schema are still open per "Completion
+  criteria", not yet added
 - `README.md` — problem statement, architecture summary, how to run
 
 ## Data quality
@@ -492,8 +496,10 @@ Databricks-specifically. See "Quality (Great Expectations)" under
 
 ## Conventions
 
-- Notebooks are numbered and run top-to-bottom; the full pipeline (bronze → gold)
-  should run from a single orchestrated entry point (the Databricks Job).
+- Notebooks are numbered and run top-to-bottom; the full pipeline (bronze → gold →
+  quality) should run from a single orchestrated entry point
+  (`trigger_pipeline.sh`, which drives the 14 Databricks Jobs - see
+  "Orchestration" under "Architecture").
 - Keep transformation logic testable: prefer classes/functions in `/src` over
   inline notebook cells when logic is reused across notebooks. This now
   includes the 8 per-table Bronze and Silver notebooks too — they call the
@@ -602,10 +608,12 @@ just "how do I actually run the next command."
 2. `terraform plan` in both `platform` and `data-factory` to check for drift
    before assuming everything's still intact.
 3. `./infra/terraform/data-factory/trigger_pipeline.sh` - the one manual
-   kickoff of the whole pipeline. Once ADF lands the Parquet, the 14
-   Databricks Jobs in `databricks.yml` cascade on their own via File
-   Arrival/Table Update triggers - see "Orchestration" under
-   "Architecture" - no further manual steps needed. (First time only, or
+   kickoff of the whole pipeline. It triggers ADF, waits for it, then
+   explicitly triggers the 8 `pipeline_<table>` Databricks Jobs itself
+   (their File Arrival triggers don't work - see "Orchestration" under
+   "Architecture"); from there the 5 `gold_<output>` Jobs and
+   `quality_checks` cascade on their own via Table Update triggers - no
+   further manual steps needed. (First time only, or
    after changing `notebooks/00_setup.sql`: run the `setup` job once via
    `databricks jobs run-now <job_id> --profile azure` before triggering
    ADF, since schema creation isn't part of the trigger chain.)

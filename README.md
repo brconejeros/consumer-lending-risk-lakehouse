@@ -65,7 +65,8 @@ fan-out at query time.
 - **Azure Database for PostgreSQL – Flexible Server** — simulated transactional
   origination source
 - **Azure Data Factory** — Postgres source → ADLS Gen2 Parquet landing, one
-  pipeline covering all 8 tables. Fully managed, billed per pipeline run
+  pipeline covering all 8 tables (parallel copy, up to 4 tables at once).
+  Fully managed, billed per pipeline run
 - **Azure Databricks** (Unity Catalog-governed workspace)
 - **ADLS Gen2** for physical storage, accessed via Unity Catalog external
   locations + managed-identity storage credentials (no keys/secrets in code) —
@@ -91,7 +92,7 @@ notebooks/        → pipeline notebooks, run in order
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
 tests/unit/        → local pyspark+delta-spark tests, no cluster needed
 tests/integration/ → Databricks Connect tests against a real serverless cluster
-docs/         → architecture diagram, ER diagram for the star schema
+docs/         → data_dictionary.md (architecture/ER diagrams still open, see Status)
 CLAUDE.md     → full project/architecture reference
 ```
 
@@ -109,12 +110,13 @@ CLAUDE.md     → full project/architecture reference
 3. **Kick off the pipeline**: `./infra/terraform/data-factory/trigger_pipeline.sh`
    — triggers the Data Factory pipeline (`copy_postgres_to_landing`),
    landing all 8 tables as Parquet in the ADLS Gen2 landing storage
-   account. From here the rest of the pipeline runs itself: each table's
-   `pipeline_<table>` Job fires on File Arrival and runs Bronze → Silver;
-   each `gold_<output>` Job fires via a Table Update trigger once the
-   Silver tables it needs have committed; `quality_checks` fires once
-   `gold.fact_application` is written. See CLAUDE.md "Architecture" →
-   "Orchestration" for the full dependency graph.
+   account, then waits for it and explicitly triggers each table's
+   `pipeline_<table>` Job (Bronze → Silver) itself. From there the rest
+   cascades on its own: each `gold_<output>` Job fires via a Table Update
+   trigger once the Silver tables it needs have committed; `quality_checks`
+   fires once `gold.fact_application` is written. See CLAUDE.md
+   "Architecture" → "Orchestration" for the full dependency graph and why
+   the first hop is explicit rather than trigger-driven.
 4. **Watch it run**: Databricks Jobs UI (each of the 14 jobs' run history),
    or Unity Catalog's table lineage graph in Catalog Explorer (open
    `gold.fact_application` → Lineage) for the whole chain in one view.
@@ -133,11 +135,13 @@ CLAUDE.md     → full project/architecture reference
       loaded and verified against real Bronze data
 - [x] Gold star schema — `fact_application` + 4 dimensions loaded and
       verified against real Silver data
-- [x] Data quality checks built (`03_quality_checks.py`, Great Expectations)
-      — not yet run against live data
-- [x] Orchestration built — 14-job Databricks Asset Bundle, chained by
-      File Arrival/Table Update triggers — deployed, not yet run end-to-end
-      for real
+- [x] Data quality checks (`03_quality_checks.py`, Great Expectations) —
+      run live twice, all 3 expectations passing against real
+      `fact_application` data
+- [x] Orchestration — 14-job Databricks Asset Bundle (8 `pipeline_<table>`
+      + 5 `gold_<output>` + `quality_checks`), run end-to-end live twice,
+      confirmed correct (see CLAUDE.md "Status" for details, including the
+      File Arrival trigger fix and ADF parallelization)
 - [ ] Dashboard (Power BI / Databricks SQL) with 3+ visualizations
 - [ ] Architecture + ER diagrams in `/docs`
 
@@ -148,8 +152,8 @@ CLAUDE.md     → full project/architecture reference
 - Azure Data Factory landing all 8 tables as Parquet in ADLS Gen2, and
   Databricks notebooks loading them into Bronze as Delta tables — **done**.
 - Pipeline runs end-to-end (bronze → gold → quality) via the 14-job
-  Databricks Asset Bundle, chained by data-dependency triggers — **built,
-  not yet verified against live data** (see CLAUDE.md "Status").
+  Databricks Asset Bundle, chained by data-dependency triggers — **done**,
+  verified live twice (see CLAUDE.md "Status").
 - Star schema documented with an ER diagram.
 - Dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band,
