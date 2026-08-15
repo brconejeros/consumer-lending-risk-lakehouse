@@ -1,0 +1,22 @@
+# Bronze -> Silver for application_train. Triggered by ADF landing new
+# Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
+# orchestration".
+resources:
+  jobs:
+    pipeline_application_train:
+      name: pipeline_application_train
+
+      trigger:
+        file_arrival:
+          url: abfss://landing@streditorigination01.dfs.core.windows.net/application_train/
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/application_train.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/application_train.py

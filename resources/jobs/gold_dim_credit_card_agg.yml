@@ -1,0 +1,20 @@
+# Builds dim_credit_card_agg. Triggered once credit_card_balance has been
+# (re)written in Silver - see DimCreditCardAggJob.extract() in
+# src/lakehouse/gold.py and CLAUDE.md "Databricks orchestration". Only one
+# watched table, so `condition` is moot, but kept explicit for consistency
+# with the other Gold jobs.
+resources:
+  jobs:
+    gold_dim_credit_card_agg:
+      name: gold_dim_credit_card_agg
+
+      trigger:
+        table_update:
+          condition: ALL_UPDATED
+          table_names:
+            - consumer_lending_risk_lakehouse.silver.tb_credit_card_balance
+
+      tasks:
+        - task_key: gold
+          notebook_task:
+            notebook_path: ../../notebooks/gold/dim_credit_card_agg.py

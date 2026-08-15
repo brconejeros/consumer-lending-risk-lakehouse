@@ -1,0 +1,26 @@
+# Databricks Asset Bundle: job-as-code for the 14 Bronze->Silver->Gold->
+# Quality jobs (see CLAUDE.md "Databricks orchestration"). Deploy with
+# `databricks bundle deploy --profile azure` from the repo root - sync
+# scope below covers exactly what the notebooks need (`notebooks/` +
+# `src/`, matching the `sys.path.append(..., "..")` trick every notebook
+# uses to import `src.lakehouse.*`), not the whole repo.
+bundle:
+  name: consumer-lending-risk-lakehouse
+
+include:
+  - resources/jobs/*.yml
+
+sync:
+  include:
+    - notebooks/**
+    - src/**
+
+targets:
+  prod:
+    default: true
+    mode: production
+    workspace:
+      host: https://adb-7405619456327656.16.azuredatabricks.net
+      root_path: /Workspace/Users/brunoconejeros@bcdataventures.com.br/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      user_name: brunoconejeros@bcdataventures.com.br
