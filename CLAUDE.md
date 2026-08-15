@@ -53,8 +53,9 @@ and "Repo layout").
 - **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms, free-tier
   eligible) — simulated transactional origination source
 - **Azure Data Factory** — one pipeline (`ForEach` + parameterized Copy Activity,
-  sequential) reads each of the 8 Postgres tables and lands them as Parquet in ADLS
-  Gen2. Fully managed/serverless - billed per pipeline run, not per VM-hour
+  parallel with a `batchCount` cap of 4 - see "Architecture") reads each of the 8
+  Postgres tables and lands them as Parquet in ADLS Gen2. Fully managed/serverless -
+  billed per pipeline run, not per VM-hour
 - Azure Databricks (Unity Catalog-governed) + ADLS Gen2 (both for the landing zone and
   the metastore's own managed storage, kept as separate storage accounts)
 - Delta Lake + PySpark
@@ -124,9 +125,15 @@ for PostgreSQL – Flexible Server (database `credit_origination_db`):
 normally come from.
 
 **Ingestion (Azure Data Factory)** — one pipeline, one `ForEach` activity
-(sequential) wrapping a parameterized Copy Activity: reads each of the 8 Postgres
+(`isSequential = false`, `batchCount = 4` - up to 4 tables copying at once, not
+unlimited) wrapping a parameterized Copy Activity: reads each of the 8 Postgres
 tables and writes them as Parquet into a dedicated ADLS Gen2 storage account's
 `landing` filesystem, one folder per table (`landing/<table>/part-0000.parquet`).
+Originally fully sequential, reacting to the old Airbyte setup's
+concurrency-driven OOM failures on self-hosted sync pods - a resource-constrained
+-compute failure mode that doesn't transfer to ADF's Copy Activity (fully managed,
+DIU-scaled, not running on a memory-capped VM), so a capped batch size gets most
+of the speed-up while keeping some throttling.
 
 **Bronze (landing zone)** — a Databricks notebook per table
 (`notebooks/bronze/<table>.py`) reads that table's Parquet folder and writes it
@@ -856,11 +863,17 @@ post-FK-drop, `fact_application`=356,255, `dim_bureau`=305,811,
 `dim_installments_agg`=336,935). `bronze_ingestion` deleted afterward,
 confirmed superseded.
 
-Next: run the rewritten `trigger_pipeline.sh` live end-to-end to confirm
-the File Arrival fix actually works, parallelize the ADF
-`ForEachBronzeTable` activity with a batch cap instead of
-`isSequential = true` (discussed with the user - the original
-Airbyte-OOM-driven caution doesn't directly apply to ADF's fully-managed
-Copy Activity), then the ER diagram and Power BI dashboard per "Completion
-criteria". Estimated 2-3 weeks at 5-8h/week (already running longer given
-the ingestion-layer detour and rebuild).
+`pipeline.tf`'s `ForEachBronzeTable` activity was changed from
+`isSequential = true` to `isSequential = false` + `batchCount = 4` (see
+"Architecture") - `terraform plan` confirmed a clean, minimal diff (just
+that one activity's two properties), but **not yet applied**: `terraform
+apply` is blocked in this session by the user's own auto-mode permission
+policy (same block hit earlier on `force-unlock`), so this needs the user
+to run `terraform apply` themselves from `infra/terraform/data-factory`.
+
+Next: apply the ADF parallelization change above, run the rewritten
+`trigger_pipeline.sh` live end-to-end to confirm the File Arrival fix
+actually works (ideally in the same live run, since both changes touch
+the same pipeline), then the ER diagram and Power BI dashboard per
+"Completion criteria". Estimated 2-3 weeks at 5-8h/week (already running
+longer given the ingestion-layer detour and rebuild).
