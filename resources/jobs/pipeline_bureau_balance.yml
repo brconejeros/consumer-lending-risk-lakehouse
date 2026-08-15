@@ -1,0 +1,22 @@
+# Bronze -> Silver for bureau_balance. Triggered by ADF landing new
+# Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
+# orchestration".
+resources:
+  jobs:
+    pipeline_bureau_balance:
+      name: pipeline_bureau_balance
+
+      trigger:
+        file_arrival:
+          url: abfss://landing@streditorigination01.dfs.core.windows.net/bureau_balance/
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/bureau_balance.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/bureau_balance.py

@@ -1,0 +1,20 @@
+# Builds dim_previous_application. Triggered once both
+# previous_application and pos_cash_balance have been (re)written in
+# Silver - see DimPreviousApplicationJob.extract() in src/lakehouse/gold.py
+# and CLAUDE.md "Databricks orchestration".
+resources:
+  jobs:
+    gold_dim_previous_application:
+      name: gold_dim_previous_application
+
+      trigger:
+        table_update:
+          condition: ALL_UPDATED
+          table_names:
+            - consumer_lending_risk_lakehouse.silver.tb_previous_application
+            - consumer_lending_risk_lakehouse.silver.tb_pos_cash_balance
+
+      tasks:
+        - task_key: gold
+          notebook_task:
+            notebook_path: ../../notebooks/gold/dim_previous_application.py

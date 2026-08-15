@@ -1,0 +1,20 @@
+# Builds fact_application. Triggered once both application_train and
+# application_test have been (re)written in Silver - see
+# FactApplicationJob.extract() in src/lakehouse/gold.py and CLAUDE.md
+# "Databricks orchestration".
+resources:
+  jobs:
+    gold_fact_application:
+      name: gold_fact_application
+
+      trigger:
+        table_update:
+          condition: ALL_UPDATED
+          table_names:
+            - consumer_lending_risk_lakehouse.silver.tb_application_train
+            - consumer_lending_risk_lakehouse.silver.tb_application_test
+
+      tasks:
+        - task_key: gold
+          notebook_task:
+            notebook_path: ../../notebooks/gold/fact_application.py

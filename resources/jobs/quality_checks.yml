@@ -1,0 +1,17 @@
+# Runs the Great Expectations checks in src/lakehouse/quality.py against
+# fact_application. Triggered once Gold has (re)written it - see CLAUDE.md
+# "Data quality" and "Databricks orchestration".
+resources:
+  jobs:
+    quality_checks:
+      name: quality_checks
+
+      trigger:
+        table_update:
+          table_names:
+            - consumer_lending_risk_lakehouse.gold.fact_application
+
+      tasks:
+        - task_key: quality
+          notebook_task:
+            notebook_path: ../../notebooks/03_quality_checks.py

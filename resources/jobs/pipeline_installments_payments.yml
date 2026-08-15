@@ -1,0 +1,22 @@
+# Bronze -> Silver for installments_payments. Triggered by ADF landing
+# new Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
+# orchestration".
+resources:
+  jobs:
+    pipeline_installments_payments:
+      name: pipeline_installments_payments
+
+      trigger:
+        file_arrival:
+          url: abfss://landing@streditorigination01.dfs.core.windows.net/installments_payments/
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/installments_payments.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/installments_payments.py

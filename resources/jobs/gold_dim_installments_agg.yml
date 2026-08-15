@@ -1,0 +1,20 @@
+# Builds dim_installments_agg. Triggered once installments_payments has
+# been (re)written in Silver - see DimInstallmentsAggJob.extract() in
+# src/lakehouse/gold.py and CLAUDE.md "Databricks orchestration". Only one
+# watched table, so `condition` is moot, but kept explicit for consistency
+# with the other Gold jobs.
+resources:
+  jobs:
+    gold_dim_installments_agg:
+      name: gold_dim_installments_agg
+
+      trigger:
+        table_update:
+          condition: ALL_UPDATED
+          table_names:
+            - consumer_lending_risk_lakehouse.silver.tb_installments_payments
+
+      tasks:
+        - task_key: gold
+          notebook_task:
+            notebook_path: ../../notebooks/gold/dim_installments_agg.py

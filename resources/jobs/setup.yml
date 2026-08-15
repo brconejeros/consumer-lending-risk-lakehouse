@@ -1,0 +1,16 @@
+# Unity Catalog schema creation (bronze/silver/gold/quality). No trigger -
+# CREATE SCHEMA IF NOT EXISTS is a one-time, rarely-changing operation, not
+# something that needs to re-run on every pipeline execution. Run manually
+# (`databricks jobs run-now <job_id> --profile azure`) once, and again only
+# if the schema list in notebooks/00_setup.sql changes.
+resources:
+  jobs:
+    setup:
+      name: setup
+
+      tasks:
+        - task_key: setup
+          sql_task:
+            file:
+              path: ../../notebooks/00_setup.sql
+            warehouse_id: 9b1762275ab88f7f

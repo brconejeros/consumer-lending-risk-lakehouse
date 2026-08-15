@@ -1,0 +1,22 @@
+# Bronze -> Silver for previous_application. Triggered by ADF landing new
+# Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
+# orchestration".
+resources:
+  jobs:
+    pipeline_previous_application:
+      name: pipeline_previous_application
+
+      trigger:
+        file_arrival:
+          url: abfss://landing@streditorigination01.dfs.core.windows.net/previous_application/
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/previous_application.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/previous_application.py

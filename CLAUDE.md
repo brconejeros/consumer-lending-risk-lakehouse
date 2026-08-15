@@ -59,6 +59,7 @@ and "Repo layout").
   the metastore's own managed storage, kept as separate storage accounts)
 - Delta Lake + PySpark
 - Star schema modeling
+- Great Expectations — Gold-layer data quality checks, see "Data quality"
 - Power BI or Databricks SQL Dashboard for the presentation layer
 
 ## Infrastructure as Code (Terraform)
@@ -162,6 +163,70 @@ Count/sum aggregates are `0` (not `NULL`) for an applicant with no rows in a
 given satellite table; avg/min/max stay `NULL` in that case, since there's
 nothing to average.
 
+**Quality (Great Expectations)** — `notebooks/03_quality_checks.py` runs
+after Gold: `CurrId` uniqueness in `fact_application` (a genuine grain
+violation, not a real-data quirk like Silver's FK orphans, so it's a hard
+failure) plus plausible-range checks on `BirthDays`/`IncomeTotalAmt`, the
+latter using GE's `mostly` parameter to tolerate the real dataset's known
+high-income outliers instead of failing every run on them. A passing run's
+per-expectation results are appended to `quality.check_results` as an
+audit trail; a failing run raises before that write happens, so the
+failure is visible in the run's own logs rather than the audit table -
+see `src/lakehouse/quality.py` for the reasoning.
+
+**Orchestration (Databricks Asset Bundle + ADF)** — `databricks.yml` (repo
+root) + `resources/jobs/*.yml` define **14 independent Databricks Jobs**,
+chained purely by data-dependency triggers rather than by jobs calling
+each other or one job's task graph spanning every layer:
+- 8 `pipeline_<table>` jobs (`bronze` → `silver` tasks, `depends_on`) - one
+  per source table, each fired by a **File Arrival trigger** watching that
+  table's ADLS landing folder
+  (`abfss://landing@streditorigination01.dfs.core.windows.net/<table>/`)
+- 5 `gold_<output>` jobs, each fired by a **Table Update trigger**
+  (`condition: ALL_UPDATED`) watching exactly the Silver tables that
+  output's `extract()` reads (`src/lakehouse/gold.py`) - e.g.
+  `gold_dim_bureau` only fires once *both* `tb_bureau` and
+  `tb_bureau_balance` have committed, not on either alone
+- `quality_checks`, fired by a Table Update trigger on `gold.fact_application`
+- `setup` (schema creation, `00_setup.sql` as a `sql_task`) - deliberately
+  **not** wired into the trigger chain. `CREATE SCHEMA IF NOT EXISTS` is a
+  one-time, rarely-changing operation; giving all 8 pipeline jobs their own
+  copy of it would mean 8x redundant SQL-warehouse spin-up per run for no
+  benefit. Run manually (`databricks jobs run-now <job_id>`), once, and
+  again only if the schema list changes.
+
+A Databricks job's `trigger` only supports one mechanism at a time
+(schedule *or* file-arrival *or* table-update, not combined) - none of
+these 14 are schedule-triggered, since Postgres is deliberately stopped
+between sessions (see "Working locally") and a clock-based trigger would
+mostly fire against a dead source. Every job stays manually runnable
+regardless (`databricks jobs run-now`), independent of its configured
+trigger.
+
+This retires the old, manually-created `bronze_ingestion` Job (created by
+hand in the UI, no `databricks` Terraform provider needed since Databricks
+Asset Bundles handle job-as-code natively) - its role is now fully covered,
+table-by-table, by the 8 `pipeline_<table>` jobs, each of which also
+chains straight into Silver (which `bronze_ingestion` never did).
+
+The Postgres→landing step (ADF) stays the one deliberate manual kickoff of
+the whole pipeline - considered a Terraform-managed
+`azurerm_data_factory_trigger_schedule`, rejected because a recurrence
+schedule doesn't fit "Postgres is off between sessions" any better than a
+Databricks schedule trigger would (a real event-driven trigger here needs
+Postgres CDC, tracked separately under "Future enhancements", not built
+yet). `infra/terraform/data-factory/trigger_pipeline.sh` scripts the
+`az rest ... createRun` call (reading `pipeline_name`/`data_factory_name`
+from Terraform output) instead of typing it from memory each session -
+once run, the rest of the 14 jobs cascade with no further manual steps.
+
+Because these are 14 separate Job objects rather than one job with an
+internal task DAG, there's no single Databricks screen showing the whole
+chain as one graph - each job's run history only shows its own tasks. To
+see the full lineage end-to-end, use Unity Catalog's table lineage graph
+in Catalog Explorer (e.g. open `gold.fact_application`'s Lineage tab) -
+it traces the real upstream chain automatically regardless of job count.
+
 ## OOP ingestion framework (`src/lakehouse`)
 
 The medallion layers share one template-method class hierarchy instead of
@@ -235,6 +300,11 @@ traceability back to the raw CSVs/Postgres tables.
 
 ## Repo layout
 
+- `/databricks.yml` + `/resources/jobs/*.yml` — Databricks Asset Bundle:
+  job-as-code for the 14 orchestration Jobs (one file per job, same
+  one-file-per-unit convention as the notebooks) - see "Orchestration"
+  under "Architecture". Deploy with `databricks bundle deploy --profile
+  azure` from the repo root
 - `/infra/terraform` — Terraform config provisioning the Postgres Flexible
   Server and the Data Factory/landing storage; see "Infrastructure as Code" for
   the module breakdown
@@ -265,7 +335,10 @@ traceability back to the raw CSVs/Postgres tables.
     an earlier draft of this doc assumed Gold would "stay single
     notebooks" before the design confirmed the outputs don't depend on
     each other
-  - `03_quality_checks.py` — not yet built
+  - `03_quality_checks.py` — a thin wrapper instantiating `QualityCheckConfig`
+    (target Gold table + its `great_expectations` expectation tuple) and
+    calling `QualityCheckJob(...).run()`, same pattern as `bronze/`/`silver/`/
+    `gold/`. Currently covers `fact_application` only, per "Data quality"
   - `silver/profiling/<table>.py` × 8 — same one-file-per-table pattern as
     `bronze/`/`silver/`, not a pipeline stage. Each is exploratory: what
     that Bronze table is, its grain, business relevance, key predictive
@@ -286,11 +359,14 @@ traceability back to the raw CSVs/Postgres tables.
   `DimBureauJob`/`DimPreviousApplicationJob`/`DimInstallmentsAggJob`/
   `DimCreditCardAggJob` - wired up per-output in `notebooks/gold/
   <output>.py`), `session.py` (Databricks Connect serverless session
-  factory, used only by `tests/integration`)
+  factory, used only by `tests/integration`), `quality.py`
+  (`QualityCheckJob`/`QualityCheckConfig` - Great Expectations checks
+  against a Gold table via an ephemeral GX `DataContext`, wired up in
+  `notebooks/03_quality_checks.py`, see "Data quality")
 - `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
   (no Databricks cluster required), run via `uv run pytest tests/unit`.
-  Covers `base.py`/`naming.py`/`silver.py`/`profiling.py`/`gold.py`; Bronze
-  has no unit tests (see `/tests/integration` below)
+  Covers `base.py`/`naming.py`/`silver.py`/`profiling.py`/`gold.py`/
+  `quality.py`; Bronze has no unit tests (see `/tests/integration` below)
 - `/tests/integration` — tests against a real **serverless** Databricks
   cluster over Databricks Connect (`src/lakehouse/session.py`); run via the
   separate `.venv-dbconnect` env, not the default one — see "Working
@@ -316,8 +392,17 @@ traceability back to the raw CSVs/Postgres tables.
 
 ## Data quality
 
-Validate with Delta Live Tables Expectations or Great Expectations:
-- `SK_ID_CURR` uniqueness in `fact_application`
+Gold-layer checks (`SK_ID_CURR` uniqueness, plausible age/income ranges)
+use **Great Expectations**, not Delta Live Tables Expectations - decided
+because GE is a standalone validation library that layers onto the
+existing plain-PySpark `LakehouseLayerJob` classes as-is, whereas DLT
+Expectations only work inside DLT's own declarative `@dlt.table` pipeline
+definitions, which would mean rewriting Bronze/Silver/Gold into a
+different execution paradigm. GE is also the more broadly transferable
+skill signal for a portfolio aimed at senior DE roles generally, not
+Databricks-specifically. See "Quality (Great Expectations)" under
+"Architecture" and `src/lakehouse/quality.py` for the implementation:
+- `SK_ID_CURR` (`CurrId`) uniqueness in `fact_application`
 - plausible ranges for age/income fields
 - non-null checks on critical fields — in Silver today, scoped to each
   table's grain columns (`SilverTableConfig.dedup_keys` doubles as the
@@ -487,10 +572,14 @@ just "how do I actually run the next command."
    for Postgres to actually come up.
 2. `terraform plan` in both `platform` and `data-factory` to check for drift
    before assuming everything's still intact.
-3. Trigger the ADF pipeline (`az rest ... /pipelines/copy_postgres_to_landing/createRun`)
-   and the Databricks Job (`databricks jobs run-now <job_id>`) as needed - both
-   are manually triggered, no schedule, since Postgres is stopped between
-   sessions.
+3. `./infra/terraform/data-factory/trigger_pipeline.sh` - the one manual
+   kickoff of the whole pipeline. Once ADF lands the Parquet, the 14
+   Databricks Jobs in `databricks.yml` cascade on their own via File
+   Arrival/Table Update triggers - see "Orchestration" under
+   "Architecture" - no further manual steps needed. (First time only, or
+   after changing `notebooks/00_setup.sql`: run the `setup` job once via
+   `databricks jobs run-now <job_id> --profile azure` before triggering
+   ADF, since schema creation isn't part of the trigger chain.)
 
 ## Completion criteria
 
@@ -499,7 +588,12 @@ just "how do I actually run the next command."
 - Azure Data Factory pipeline landing all 8 tables as Parquet in ADLS Gen2, and
   Databricks notebooks loading them into Unity Catalog's `bronze` schema as Delta
   tables - **done**, verified end-to-end (see "Status").
-- Pipeline runs end-to-end (bronze → gold) from a single command/orchestrated notebook.
+- Pipeline runs end-to-end (bronze → gold → quality checks) from a single
+  command/orchestrated notebook - **built, not yet verified against live
+  data**: the 14-job Databricks Asset Bundle + `trigger_pipeline.sh` are
+  deployed (see "Orchestration" under "Architecture"), but the cascade
+  hasn't been run for real yet, and the old `bronze_ingestion` Job hasn't
+  been deleted pending that verification.
 - Star schema documented with an ER diagram.
 - Power BI dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band, drill-down
@@ -693,7 +787,31 @@ The feature set per dimension is a reasonable first pass (counts, sums,
 means, max delinquency per "Architecture"), not exhaustive feature
 engineering - real modeling work will likely want more later.
 
-Next: `03_quality_checks.py` (data quality expectations), then the ER
-diagram and Power BI dashboard per "Completion criteria". Estimated 2-3
-weeks at 5-8h/week (already running longer given the ingestion-layer
-detour and rebuild).
+`03_quality_checks.py` is built - `src/lakehouse/quality.py`'s
+`QualityCheckJob`/`QualityCheckConfig` running Great Expectations checks
+against `fact_application` (`CurrId` uniqueness, `BirthDays`/
+`IncomeTotalAmt` plausible ranges - see "Data quality" for why GE over DLT
+Expectations), appending results to `quality.check_results` on a pass.
+Unit-tested (`tests/unit/test_quality.py`) but **not yet run against live
+data** - that's the next session's first step, same verify-for-real pass
+every other layer got (see the Silver/Gold entries above).
+
+Orchestration is built (see "Orchestration" under "Architecture"):
+`databricks.yml` + `resources/jobs/*.yml` define 14 independent Databricks
+Jobs (8 `pipeline_<table>`, 5 `gold_<output>`, 1 `quality_checks`, plus
+`setup`), chained by File Arrival/Table Update triggers rather than a
+per-layer barrier, deployed via `databricks bundle deploy --profile azure`
+and confirmed live (`databricks jobs list --profile azure` shows all 15,
+`databricks bundle validate` resolved every trigger/notebook path
+correctly before deploy). `infra/terraform/data-factory/trigger_pipeline.sh`
+scripts the ADF kickoff. **Not yet run for real** - the cascade hasn't
+been exercised against live data yet, and the old `bronze_ingestion` Job
+is still there, deliberately not deleted until that verification confirms
+the new jobs produce the same Bronze tables correctly.
+
+Next: run the pipeline for real end-to-end (`toggle.sh start` →
+`trigger_pipeline.sh` → watch the 14 jobs cascade), confirm `quality_checks`
+lands rows in `quality.check_results`, delete `bronze_ingestion` once
+confirmed, then the ER diagram and Power BI dashboard per "Completion
+criteria". Estimated 2-3 weeks at 5-8h/week (already running longer given
+the ingestion-layer detour and rebuild).

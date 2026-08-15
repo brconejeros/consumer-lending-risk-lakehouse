@@ -1,0 +1,22 @@
+# Bronze -> Silver for credit_card_balance. Triggered by ADF landing new
+# Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
+# orchestration".
+resources:
+  jobs:
+    pipeline_credit_card_balance:
+      name: pipeline_credit_card_balance
+
+      trigger:
+        file_arrival:
+          url: abfss://landing@streditorigination01.dfs.core.windows.net/credit_card_balance/
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/credit_card_balance.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/credit_card_balance.py
