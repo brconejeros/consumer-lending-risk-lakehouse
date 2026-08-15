@@ -1,18 +1,16 @@
-# Bronze -> Silver for POS_CASH_balance. Triggered by ADF landing new
-# Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
-# orchestration". Landing path keeps the source dataset's raw casing
-# (POS_CASH_balance, per pipeline.tf's `local.bronze_tables` and
-# `BronzeTableConfig(table="POS_CASH_balance")` in
-# notebooks/bronze/pos_cash_balance.py) even though the job/task/notebook
-# file names stay lowercase like every other table.
+# Bronze -> Silver for POS_CASH_balance. No trigger here - a File Arrival
+# trigger would never fire, since ADF always overwrites the same filename
+# per table and Databricks doesn't treat that as a new arrival. Triggered
+# explicitly by infra/terraform/data-factory/trigger_pipeline.sh once ADF
+# confirms success - see CLAUDE.md "Databricks orchestration". Job/task/
+# notebook names stay lowercase like every other table, even though the
+# source dataset's raw casing (POS_CASH_balance, per pipeline.tf's
+# `local.bronze_tables` and `BronzeTableConfig(table="POS_CASH_balance")`
+# in notebooks/bronze/pos_cash_balance.py) shows up elsewhere.
 resources:
   jobs:
     pipeline_pos_cash_balance:
       name: pipeline_pos_cash_balance
-
-      trigger:
-        file_arrival:
-          url: abfss://landing@streditorigination01.dfs.core.windows.net/POS_CASH_balance/
 
       tasks:
         - task_key: bronze

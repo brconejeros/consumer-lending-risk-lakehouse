@@ -1,14 +1,12 @@
-# Bronze -> Silver for application_test. Triggered by ADF landing new
-# Parquet in this table's ADLS folder - see CLAUDE.md "Databricks
-# orchestration".
+# Bronze -> Silver for application_test. No trigger here - a File Arrival
+# trigger would never fire, since ADF always overwrites the same filename
+# per table and Databricks doesn't treat that as a new arrival. Triggered
+# explicitly by infra/terraform/data-factory/trigger_pipeline.sh once ADF
+# confirms success - see CLAUDE.md "Databricks orchestration".
 resources:
   jobs:
     pipeline_application_test:
       name: pipeline_application_test
-
-      trigger:
-        file_arrival:
-          url: abfss://landing@streditorigination01.dfs.core.windows.net/application_test/
 
       tasks:
         - task_key: bronze
