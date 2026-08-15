@@ -1,4 +1,12 @@
 # Databricks notebook source
+# MAGIC %pip install great-expectations==1.20.0
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 import os
 import sys
 
