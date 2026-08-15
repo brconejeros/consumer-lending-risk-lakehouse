@@ -179,9 +179,18 @@ root) + `resources/jobs/*.yml` define **14 independent Databricks Jobs**,
 chained purely by data-dependency triggers rather than by jobs calling
 each other or one job's task graph spanning every layer:
 - 8 `pipeline_<table>` jobs (`bronze` → `silver` tasks, `depends_on`) - one
-  per source table, each fired by a **File Arrival trigger** watching that
-  table's ADLS landing folder
-  (`abfss://landing@streditorigination01.dfs.core.windows.net/<table>/`)
+  per source table, each *configured* with a **File Arrival trigger**
+  watching that table's ADLS landing folder
+  (`abfss://landing@streditorigination01.dfs.core.windows.net/<table>/`).
+  **Known broken as designed**: verified live (2026-08-15) that these
+  triggers don't actually fire, because ADF's Copy Activity always writes
+  the same filename (`part-0000.parquet`) each run, and Databricks' own
+  docs are explicit that "Overwriting an existing file with a file of the
+  same name does not trigger a run." Worked around for that session's run
+  via manual `databricks jobs run-now` on all 8; a real fix (e.g. having
+  `trigger_pipeline.sh` explicitly run the 8 jobs once ADF confirms
+  success, or having ADF write a uniquely-named marker file per run to
+  trigger off of) is still open
 - 5 `gold_<output>` jobs, each fired by a **Table Update trigger**
   (`condition: ALL_UPDATED`) watching exactly the Silver tables that
   output's `extract()` reads (`src/lakehouse/gold.py`) - e.g.
@@ -203,11 +212,12 @@ mostly fire against a dead source. Every job stays manually runnable
 regardless (`databricks jobs run-now`), independent of its configured
 trigger.
 
-This retires the old, manually-created `bronze_ingestion` Job (created by
+This retired the old, manually-created `bronze_ingestion` Job (created by
 hand in the UI, no `databricks` Terraform provider needed since Databricks
-Asset Bundles handle job-as-code natively) - its role is now fully covered,
-table-by-table, by the 8 `pipeline_<table>` jobs, each of which also
-chains straight into Silver (which `bronze_ingestion` never did).
+Asset Bundles handle job-as-code natively) - deleted 2026-08-15 after live
+verification confirmed the 8 `pipeline_<table>` jobs produce identical
+Bronze data, table-by-table, each of which also chains straight into
+Silver (which `bronze_ingestion` never did).
 
 The Postgres→landing step (ADF) stays the one deliberate manual kickoff of
 the whole pipeline - considered a Terraform-managed
@@ -589,11 +599,11 @@ just "how do I actually run the next command."
   Databricks notebooks loading them into Unity Catalog's `bronze` schema as Delta
   tables - **done**, verified end-to-end (see "Status").
 - Pipeline runs end-to-end (bronze → gold → quality checks) from a single
-  command/orchestrated notebook - **built, not yet verified against live
-  data**: the 14-job Databricks Asset Bundle + `trigger_pipeline.sh` are
-  deployed (see "Orchestration" under "Architecture"), but the cascade
-  hasn't been run for real yet, and the old `bronze_ingestion` Job hasn't
-  been deleted pending that verification.
+  command/orchestrated notebook - **mostly done**: verified live end-to-end
+  on 2026-08-15 (all row counts and quality checks correct - see "Status"),
+  but the 8 `pipeline_<table>` jobs' File Arrival triggers don't actually
+  fire (see "Orchestration" under "Architecture") - `trigger_pipeline.sh`
+  is not yet truly hands-off until that's fixed.
 - Star schema documented with an ER diagram.
 - Power BI dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band, drill-down
@@ -792,26 +802,41 @@ engineering - real modeling work will likely want more later.
 against `fact_application` (`CurrId` uniqueness, `BirthDays`/
 `IncomeTotalAmt` plausible ranges - see "Data quality" for why GE over DLT
 Expectations), appending results to `quality.check_results` on a pass.
-Unit-tested (`tests/unit/test_quality.py`) but **not yet run against live
-data** - that's the next session's first step, same verify-for-real pass
-every other layer got (see the Silver/Gold entries above).
+Unit-tested (`tests/unit/test_quality.py`) and **run for real** (see
+below) - all 3 expectations passed against live `fact_application` data.
 
 Orchestration is built (see "Orchestration" under "Architecture"):
 `databricks.yml` + `resources/jobs/*.yml` define 14 independent Databricks
 Jobs (8 `pipeline_<table>`, 5 `gold_<output>`, 1 `quality_checks`, plus
 `setup`), chained by File Arrival/Table Update triggers rather than a
-per-layer barrier, deployed via `databricks bundle deploy --profile azure`
-and confirmed live (`databricks jobs list --profile azure` shows all 15,
-`databricks bundle validate` resolved every trigger/notebook path
-correctly before deploy). `infra/terraform/data-factory/trigger_pipeline.sh`
-scripts the ADF kickoff. **Not yet run for real** - the cascade hasn't
-been exercised against live data yet, and the old `bronze_ingestion` Job
-is still there, deliberately not deleted until that verification confirms
-the new jobs produce the same Bronze tables correctly.
+per-layer barrier, deployed via `databricks bundle deploy --profile azure`.
+`infra/terraform/data-factory/trigger_pipeline.sh` scripts the ADF kickoff.
 
-Next: run the pipeline for real end-to-end (`toggle.sh start` →
-`trigger_pipeline.sh` → watch the 14 jobs cascade), confirm `quality_checks`
-lands rows in `quality.check_results`, delete `bronze_ingestion` once
-confirmed, then the ER diagram and Power BI dashboard per "Completion
+**Run for real end-to-end on 2026-08-15** (`toggle.sh start` →
+`trigger_pipeline.sh` → the 14-job cascade → `quality_checks`). Two real
+bugs surfaced on actual Databricks compute (neither catchable locally) and
+were fixed same-session (see `bugfix/quality-checks-serverless-compat`,
+PR #51): `great-expectations` was never installed on the cluster (added a
+`%pip install` cell), and GX's `SparkDFExecutionEngine` defaults to
+`.persist()`-ing the batch DataFrame, which Spark Connect/serverless
+compute rejects (fixed via `add_spark(..., persist=False)`). Also
+confirmed the File Arrival triggers on the 8 `pipeline_<table>` jobs don't
+actually fire - see "Orchestration" under "Architecture" for why and the
+workaround used; **this is the next real fix needed**, not just polish.
+
+Every other part of the cascade worked exactly as designed: `gold_dim_bureau`
+genuinely waited for both `tb_bureau` and `tb_bureau_balance` to commit
+before firing (spot-checked via start-time ordering), and every table's row
+count post-run matched the previously-verified historical values exactly
+(`bureau_balance`=27,299,925, `installments_payments`=13,605,401,
+`tb_bureau_balance`=24,179,741 post-FK-drop, `fact_application`=356,255,
+`dim_bureau`=305,811, `dim_installments_agg`=336,935). `bronze_ingestion`
+deleted afterward, confirmed superseded.
+
+Next: fix the File Arrival trigger gap for real (see "Orchestration"),
+parallelize the ADF `ForEachBronzeTable` activity with a batch cap instead
+of `isSequential = true` (discussed with the user - the original
+Airbyte-OOM-driven caution doesn't directly apply to ADF's fully-managed
+Copy Activity), then the ER diagram and Power BI dashboard per "Completion
 criteria". Estimated 2-3 weeks at 5-8h/week (already running longer given
 the ingestion-layer detour and rebuild).
