@@ -618,12 +618,9 @@ just "how do I actually run the next command."
   Databricks notebooks loading them into Unity Catalog's `bronze` schema as Delta
   tables - **done**, verified end-to-end (see "Status").
 - Pipeline runs end-to-end (bronze → gold → quality checks) from a single
-  command/orchestrated notebook - **functionally verified, one fix pending
-  re-verification**: the full cascade ran correctly live on 2026-08-15
-  (all row counts and quality checks correct - see "Status"), but that run
-  surfaced a File Arrival trigger limitation that needed a same-day fix to
-  `trigger_pipeline.sh` (see "Orchestration" under "Architecture") - the
-  fix hasn't been run live yet.
+  command/orchestrated notebook - **done**, verified live twice on
+  2026-08-15 (see "Status") - the second run confirmed the File Arrival
+  trigger fix and parallel ADF copy both work correctly together.
 - Star schema documented with an ER diagram.
 - Power BI dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band, drill-down
@@ -874,8 +871,16 @@ assignment (existed live under a different ID than Terraform's stale
 state recorded - see "Infrastructure as Code" gotchas) via `terraform
 import`; `terraform plan` on `data-factory` now shows zero drift.
 
-Next: run the rewritten `trigger_pipeline.sh` live end-to-end to confirm
-both the File Arrival fix and the parallel ADF copy actually work
-together, then the ER diagram and Power BI dashboard per "Completion
-criteria". Estimated 2-3 weeks at 5-8h/week (already running longer given
-the ingestion-layer detour and rebuild).
+**Confirmed live end-to-end a second time on 2026-08-15** with both fixes
+in place: `trigger_pipeline.sh` triggered ADF, which finished in ~3
+minutes (down from ~8-9 minutes pre-parallelization), then explicitly
+triggered the 8 `pipeline_<table>` jobs itself as designed - all 8
+succeeded within about 90 seconds of each other. The 5 `gold_<output>`
+jobs and `quality_checks` still cascaded entirely on their own via Table
+Update triggers, unaffected by either fix, finishing the whole 14-job
+run in under 7 minutes total. `quality_checks` passed all 3 expectations
+against the fresh data. Postgres stopped afterward - nothing left running.
+
+Next: the ER diagram and Power BI dashboard, the last two "Completion
+criteria" items. Estimated 2-3 weeks at 5-8h/week (already running longer
+given the ingestion-layer detour and rebuild).
