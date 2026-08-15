@@ -865,15 +865,17 @@ confirmed superseded.
 
 `pipeline.tf`'s `ForEachBronzeTable` activity was changed from
 `isSequential = true` to `isSequential = false` + `batchCount = 4` (see
-"Architecture") - `terraform plan` confirmed a clean, minimal diff (just
-that one activity's two properties), but **not yet applied**: `terraform
-apply` is blocked in this session by the user's own auto-mode permission
-policy (same block hit earlier on `force-unlock`), so this needs the user
-to run `terraform apply` themselves from `infra/terraform/data-factory`.
+"Architecture") and **applied for real by the user** on 2026-08-15
+(`terraform apply` is blocked in this session by the user's own auto-mode
+permission policy, same block hit earlier on `force-unlock`, so this
+needed the user to run it themselves from `infra/terraform/data-factory`).
+While there, also imported the long-drifted `databricks_to_landing` role
+assignment (existed live under a different ID than Terraform's stale
+state recorded - see "Infrastructure as Code" gotchas) via `terraform
+import`; `terraform plan` on `data-factory` now shows zero drift.
 
-Next: apply the ADF parallelization change above, run the rewritten
-`trigger_pipeline.sh` live end-to-end to confirm the File Arrival fix
-actually works (ideally in the same live run, since both changes touch
-the same pipeline), then the ER diagram and Power BI dashboard per
-"Completion criteria". Estimated 2-3 weeks at 5-8h/week (already running
-longer given the ingestion-layer detour and rebuild).
+Next: run the rewritten `trigger_pipeline.sh` live end-to-end to confirm
+both the File Arrival fix and the parallel ADF copy actually work
+together, then the ER diagram and Power BI dashboard per "Completion
+criteria". Estimated 2-3 weeks at 5-8h/week (already running longer given
+the ingestion-layer detour and rebuild).
