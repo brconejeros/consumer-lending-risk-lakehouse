@@ -108,7 +108,14 @@ class QualityCheckJob(LakehouseLayerJob):
 
     def _run_suite(self, df: DataFrame) -> ExpectationSuiteValidationResult:
         context = gx.get_context(mode="ephemeral")
-        data_source = context.data_sources.add_spark(name=f"{self.config.target}_spark_ds")
+        # persist=False: GX's SparkDFExecutionEngine defaults to
+        # `.persist()`-ing the batch DataFrame, which Spark Connect
+        # (serverless compute) rejects with "PERSIST TABLE is not
+        # supported on serverless compute" - not needed anyway for a
+        # single-batch, single-suite validation like this one.
+        data_source = context.data_sources.add_spark(
+            name=f"{self.config.target}_spark_ds", persist=False
+        )
         asset = data_source.add_dataframe_asset(name=f"{self.config.target}_asset")
         batch_definition = asset.add_batch_definition_whole_dataframe(f"{self.config.target}_batch")
         batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
