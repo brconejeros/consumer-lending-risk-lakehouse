@@ -1,0 +1,21 @@
+# Bronze -> Silver for previous_application. No trigger here - a File
+# Arrival trigger would never fire, since ADF always overwrites the same
+# filename per table and Databricks doesn't treat that as a new arrival.
+# Triggered explicitly by
+# infra/terraform/data-factory/trigger_pipeline.sh once ADF confirms
+# success - see CLAUDE.md "Databricks orchestration".
+resources:
+  jobs:
+    pipeline_previous_application:
+      name: pipeline_previous_application
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/previous_application.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/previous_application.py

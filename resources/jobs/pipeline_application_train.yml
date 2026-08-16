@@ -1,0 +1,20 @@
+# Bronze -> Silver for application_train. No trigger here - a File Arrival
+# trigger would never fire, since ADF always overwrites the same filename
+# per table and Databricks doesn't treat that as a new arrival. Triggered
+# explicitly by infra/terraform/data-factory/trigger_pipeline.sh once ADF
+# confirms success - see CLAUDE.md "Databricks orchestration".
+resources:
+  jobs:
+    pipeline_application_train:
+      name: pipeline_application_train
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/application_train.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/application_train.py

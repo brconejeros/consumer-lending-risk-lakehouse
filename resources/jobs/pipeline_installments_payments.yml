@@ -1,0 +1,21 @@
+# Bronze -> Silver for installments_payments. No trigger here - a File
+# Arrival trigger would never fire, since ADF always overwrites the same
+# filename per table and Databricks doesn't treat that as a new arrival.
+# Triggered explicitly by
+# infra/terraform/data-factory/trigger_pipeline.sh once ADF confirms
+# success - see CLAUDE.md "Databricks orchestration".
+resources:
+  jobs:
+    pipeline_installments_payments:
+      name: pipeline_installments_payments
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/installments_payments.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/installments_payments.py

@@ -65,7 +65,8 @@ fan-out at query time.
 - **Azure Database for PostgreSQL – Flexible Server** — simulated transactional
   origination source
 - **Azure Data Factory** — Postgres source → ADLS Gen2 Parquet landing, one
-  pipeline covering all 8 tables. Fully managed, billed per pipeline run
+  pipeline covering all 8 tables (parallel copy, up to 4 tables at once).
+  Fully managed, billed per pipeline run
 - **Azure Databricks** (Unity Catalog-governed workspace)
 - **ADLS Gen2** for physical storage, accessed via Unity Catalog external
   locations + managed-identity storage credentials (no keys/secrets in code) —
@@ -77,49 +78,70 @@ fan-out at query time.
 ## Repo structure
 
 ```
+databricks.yml    → Databricks Asset Bundle: job-as-code for the 14 orchestration Jobs
+resources/jobs/   → one YAML file per job (pipeline_<table>, gold_<output>, quality_checks, setup)
 infra/terraform/  → Terraform: Postgres Flexible Server, Data Factory, ADLS Gen2 landing storage
 infra/postgres/   → CSV-load script (loads the 8 CSVs into Postgres as tables)
-notebooks/        → numbered pipeline notebooks, run in order
-  00_setup.sql          → Unity Catalog schema creation
-  bronze/<table>.py     → one notebook per table, instantiates BronzeIngestionJob
-  01_silver_transform.py, 02_gold_aggregation.py, 03_quality_checks.py
+notebooks/        → pipeline notebooks, run in order
+  00_setup.sql            → Unity Catalog schema creation
+  bronze/<table>.py       → one notebook per table, instantiates BronzeIngestionJob
+  silver/<table>.py       → one notebook per table, instantiates SilverTransformJob
+  silver/profiling/<table>.py → one notebook per table, exploratory (not a pipeline stage)
+  gold/<output>.py       → one notebook per output, instantiates a GoldAggregationJob subclass
+  03_quality_checks.py
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
-tests/        → unit tests for src/, run locally with pytest (no cluster needed)
-docs/         → architecture diagram, ER diagram for the star schema
+tests/unit/        → local pyspark+delta-spark tests, no cluster needed
+tests/integration/ → Databricks Connect tests against a real serverless cluster
+docs/         → data_dictionary.md (architecture/ER diagrams still open, see Status)
 CLAUDE.md     → full project/architecture reference
 ```
 
 ## How to run
 
-1. **Source**: `cd infra/terraform/platform && ./toggle.sh start`, then run
-   `infra/postgres/load_csvs.py` to populate `credit_origination_db` with the 8
-   CSVs as tables.
-2. **Ingestion**: trigger the Data Factory pipeline
-   (`copy_postgres_to_landing`) — lands all 8 tables as Parquet in the ADLS
-   Gen2 landing storage account.
-3. **Bronze**: run the `bronze_ingestion` Databricks Job — loads the
-   landed Parquet into `consumer_lending_risk_lakehouse.bronze` as Delta
-   tables, one notebook per table.
-4. Open `/notebooks` in the Databricks workspace and run the rest in numeric
-   order, attached to a running cluster/warehouse:
-   - `01_silver_transform.py` — cleans types, nulls, dedups, validates FKs
-     *(pending)*
-   - `02_gold_aggregation.py` — builds the star schema *(pending)*
-   - `03_quality_checks.py` — data quality expectations *(pending)*
+1. **Deploy the Databricks Jobs** (one-time, or after changing a notebook/
+   job definition): `databricks bundle deploy --profile azure` from the
+   repo root — deploys the 14 orchestration Jobs + `setup` defined in
+   `databricks.yml`/`resources/jobs/*.yml`. First time only, run the
+   `setup` job once (`databricks jobs run-now <job_id> --profile azure`)
+   to create the Unity Catalog schemas.
+2. **Start Postgres**: `cd infra/terraform/platform && ./toggle.sh start`,
+   then run `infra/postgres/load_csvs.py` to populate
+   `credit_origination_db` with the 8 CSVs as tables.
+3. **Kick off the pipeline**: `./infra/terraform/data-factory/trigger_pipeline.sh`
+   — triggers the Data Factory pipeline (`copy_postgres_to_landing`),
+   landing all 8 tables as Parquet in the ADLS Gen2 landing storage
+   account, then waits for it and explicitly triggers each table's
+   `pipeline_<table>` Job (Bronze → Silver) itself. From there the rest
+   cascades on its own: each `gold_<output>` Job fires via a Table Update
+   trigger once the Silver tables it needs have committed; `quality_checks`
+   fires once `gold.fact_application` is written. See CLAUDE.md
+   "Architecture" → "Orchestration" for the full dependency graph and why
+   the first hop is explicit rather than trigger-driven.
+4. **Watch it run**: Databricks Jobs UI (each of the 14 jobs' run history),
+   or Unity Catalog's table lineage graph in Catalog Explorer (open
+   `gold.fact_application` → Lineage) for the whole chain in one view.
 
 ## Status
 
 - [x] Azure infra provisioned (Databricks workspace, Unity Catalog metastore,
       ADLS Gen2 storage, access connectors)
-- [x] Unity Catalog schemas created (`bronze`, `silver`, `gold`)
+- [x] Unity Catalog schemas created (`bronze`, `silver`, `gold`, `quality`)
 - [x] PostgreSQL running on Azure with all 8 tables loaded
 - [x] Azure Data Factory pipeline built and verified — lands all 8 tables as
       Parquet in ADLS Gen2
 - [x] Bronze ingestion (Parquet → Delta) — all 8 tables loaded and verified
       against known row counts
-- [ ] Silver transformation + referential integrity checks
-- [ ] Gold star schema
-- [ ] Data quality checks
+- [x] Silver transformation + referential integrity checks — all 8 tables
+      loaded and verified against real Bronze data
+- [x] Gold star schema — `fact_application` + 4 dimensions loaded and
+      verified against real Silver data
+- [x] Data quality checks (`03_quality_checks.py`, Great Expectations) —
+      run live twice, all 3 expectations passing against real
+      `fact_application` data
+- [x] Orchestration — 14-job Databricks Asset Bundle (8 `pipeline_<table>`
+      + 5 `gold_<output>` + `quality_checks`), run end-to-end live twice,
+      confirmed correct (see CLAUDE.md "Status" for details, including the
+      File Arrival trigger fix and ADF parallelization)
 - [ ] Dashboard (Power BI / Databricks SQL) with 3+ visualizations
 - [ ] Architecture + ER diagrams in `/docs`
 
@@ -129,7 +151,9 @@ CLAUDE.md     → full project/architecture reference
   transactional source.
 - Azure Data Factory landing all 8 tables as Parquet in ADLS Gen2, and
   Databricks notebooks loading them into Bronze as Delta tables — **done**.
-- Pipeline runs end-to-end (bronze → gold) from a single orchestrated notebook.
+- Pipeline runs end-to-end (bronze → gold → quality) via the 14-job
+  Databricks Asset Bundle, chained by data-dependency triggers — **done**,
+  verified live twice (see CLAUDE.md "Status").
 - Star schema documented with an ER diagram.
 - Dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band,

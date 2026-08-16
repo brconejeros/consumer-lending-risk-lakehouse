@@ -1,0 +1,19 @@
+# Builds dim_bureau. Triggered once both bureau and bureau_balance have
+# been (re)written in Silver - see DimBureauJob.extract() in
+# src/lakehouse/gold.py and CLAUDE.md "Databricks orchestration".
+resources:
+  jobs:
+    gold_dim_bureau:
+      name: gold_dim_bureau
+
+      trigger:
+        table_update:
+          condition: ALL_UPDATED
+          table_names:
+            - consumer_lending_risk_lakehouse.silver.tb_bureau
+            - consumer_lending_risk_lakehouse.silver.tb_bureau_balance
+
+      tasks:
+        - task_key: gold
+          notebook_task:
+            notebook_path: ../../notebooks/gold/dim_bureau.py

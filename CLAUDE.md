@@ -53,12 +53,14 @@ and "Repo layout").
 - **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms, free-tier
   eligible) — simulated transactional origination source
 - **Azure Data Factory** — one pipeline (`ForEach` + parameterized Copy Activity,
-  sequential) reads each of the 8 Postgres tables and lands them as Parquet in ADLS
-  Gen2. Fully managed/serverless - billed per pipeline run, not per VM-hour
+  parallel with a `batchCount` cap of 4 - see "Architecture") reads each of the 8
+  Postgres tables and lands them as Parquet in ADLS Gen2. Fully managed/serverless -
+  billed per pipeline run, not per VM-hour
 - Azure Databricks (Unity Catalog-governed) + ADLS Gen2 (both for the landing zone and
   the metastore's own managed storage, kept as separate storage accounts)
 - Delta Lake + PySpark
 - Star schema modeling
+- Great Expectations — Gold-layer data quality checks, see "Data quality"
 - Power BI or Databricks SQL Dashboard for the presentation layer
 
 ## Infrastructure as Code (Terraform)
@@ -123,18 +125,24 @@ for PostgreSQL – Flexible Server (database `credit_origination_db`):
 normally come from.
 
 **Ingestion (Azure Data Factory)** — one pipeline, one `ForEach` activity
-(sequential) wrapping a parameterized Copy Activity: reads each of the 8 Postgres
+(`isSequential = false`, `batchCount = 4` - up to 4 tables copying at once, not
+unlimited) wrapping a parameterized Copy Activity: reads each of the 8 Postgres
 tables and writes them as Parquet into a dedicated ADLS Gen2 storage account's
 `landing` filesystem, one folder per table (`landing/<table>/part-0000.parquet`).
+Originally fully sequential, reacting to the old Airbyte setup's
+concurrency-driven OOM failures on self-hosted sync pods - a resource-constrained
+-compute failure mode that doesn't transfer to ADF's Copy Activity (fully managed,
+DIU-scaled, not running on a memory-capped VM), so a capped batch size gets most
+of the speed-up while keeping some throttling.
 
 **Bronze (landing zone)** — a Databricks notebook per table
 (`notebooks/bronze/<table>.py`) reads that table's Parquet folder and writes it
 into Unity Catalog's `bronze` schema as a Delta table via `saveAsTable(...,
 mode="overwrite")` — a full overwrite each run, not incremental/merge, since
-there's no CDC/incremental state to track (see "Future enhancements"). A
-Databricks Job (`bronze_ingestion`) runs `00_setup.sql` first, then all 8
-per-table notebooks in parallel (independent of each other, only depending on
-setup).
+there's no CDC/incremental state to track (see "Future enhancements"). Run as
+the first task of that table's `pipeline_<table>` Databricks Job (see
+"Orchestration" below) — the old single `bronze_ingestion` Job that ran all 8
+tables' Bronze notebooks together has been retired.
 
 The read/write logic itself lives in one class, `BronzeIngestionJob`
 (`src/lakehouse/bronze.py`), not copy-pasted across the 8 notebooks — see
@@ -147,7 +155,10 @@ categoricals), de-duplication, referential integrity checks across tables (e.g. 
 satellite tables must exist in `previous_application`).
 
 **Gold (star schema)** — grain is 1 row per `SK_ID_CURR`:
-- `fact_application` — one row per applicant
+- `fact_application` — one row per applicant, unioning `tb_application_train`
+  and `tb_application_test` (`SampleTypeCd` = `TRAIN`/`TEST`, `Target`
+  nullable since test rows have none) so every applicant - labeled or not -
+  joins to every dimension the same way
 - `dim_bureau` — aggregated bureau history per applicant
 - `dim_previous_application` — aggregated prior Home Credit applications per applicant
 - `dim_installments_agg` — aggregated installment payment behavior per applicant
@@ -155,6 +166,86 @@ satellite tables must exist in `previous_application`).
 
 Each dimension is pre-aggregated to `SK_ID_CURR` grain (count, sum, mean, max of
 delinquency/payment fields) so `fact_application` joins to each dimension 1:1.
+Count/sum aggregates are `0` (not `NULL`) for an applicant with no rows in a
+given satellite table; avg/min/max stay `NULL` in that case, since there's
+nothing to average.
+
+**Quality (Great Expectations)** — `notebooks/03_quality_checks.py` runs
+after Gold: `CurrId` uniqueness in `fact_application` (a genuine grain
+violation, not a real-data quirk like Silver's FK orphans, so it's a hard
+failure) plus plausible-range checks on `BirthDays`/`IncomeTotalAmt`, the
+latter using GE's `mostly` parameter to tolerate the real dataset's known
+high-income outliers instead of failing every run on them. A passing run's
+per-expectation results are appended to `quality.check_results` as an
+audit trail; a failing run raises before that write happens, so the
+failure is visible in the run's own logs rather than the audit table -
+see `src/lakehouse/quality.py` for the reasoning.
+
+**Orchestration (Databricks Asset Bundle + ADF)** — `databricks.yml` (repo
+root) + `resources/jobs/*.yml` define **14 independent Databricks Jobs**:
+- 8 `pipeline_<table>` jobs (`bronze` → `silver` tasks, `depends_on`) - one
+  per source table, **no trigger configured**. Originally set up with a
+  File Arrival trigger watching each table's ADLS landing folder
+  (`abfss://landing@streditorigination01.dfs.core.windows.net/<table>/`),
+  removed after verifying live (2026-08-15) that it could never fire: ADF's
+  Copy Activity always writes the same filename (`part-0000.parquet`) each
+  run, and Databricks' own docs are explicit that "Overwriting an existing
+  file with a file of the same name does not trigger a run." Leaving a
+  trigger configured that can never fire would be actively misleading (the
+  UI would show "File arrival" as if it were automatic), so these 8 jobs
+  are instead triggered explicitly - see `trigger_pipeline.sh` below
+- 5 `gold_<output>` jobs, each fired by a **Table Update trigger**
+  (`condition: ALL_UPDATED`) watching exactly the Silver tables that
+  output's `extract()` reads (`src/lakehouse/gold.py`) - e.g.
+  `gold_dim_bureau` only fires once *both* `tb_bureau` and
+  `tb_bureau_balance` have committed, not on either alone
+- `quality_checks`, fired by a Table Update trigger on `gold.fact_application`
+- `setup` (schema creation, `00_setup.sql` as a `sql_task`) - deliberately
+  **not** wired into the trigger chain. `CREATE SCHEMA IF NOT EXISTS` is a
+  one-time, rarely-changing operation; giving all 8 pipeline jobs their own
+  copy of it would mean 8x redundant SQL-warehouse spin-up per run for no
+  benefit. Run manually (`databricks jobs run-now <job_id>`), once, and
+  again only if the schema list changes.
+
+A Databricks job's `trigger` only supports one mechanism at a time
+(schedule *or* file-arrival *or* table-update, not combined) - none of
+these 14 are schedule-triggered, since Postgres is deliberately stopped
+between sessions (see "Working locally") and a clock-based trigger would
+mostly fire against a dead source. Every job stays manually runnable
+regardless (`databricks jobs run-now`), independent of its configured
+trigger.
+
+This retired the old, manually-created `bronze_ingestion` Job (created by
+hand in the UI, no `databricks` Terraform provider needed since Databricks
+Asset Bundles handle job-as-code natively) - deleted 2026-08-15 after live
+verification confirmed the 8 `pipeline_<table>` jobs produce identical
+Bronze data, table-by-table, each of which also chains straight into
+Silver (which `bronze_ingestion` never did).
+
+The Postgres→landing step (ADF) stays the one deliberate manual kickoff of
+the whole pipeline - considered a Terraform-managed
+`azurerm_data_factory_trigger_schedule`, rejected because a recurrence
+schedule doesn't fit "Postgres is off between sessions" any better than a
+Databricks schedule trigger would (a real event-driven trigger here needs
+Postgres CDC, tracked separately under "Future enhancements", not built
+yet). `infra/terraform/data-factory/trigger_pipeline.sh` triggers the ADF
+pipeline (reading `pipeline_name`/`data_factory_name` from Terraform
+output instead of typing the `az rest ... createRun` call from memory),
+polls until it succeeds, then explicitly triggers all 8
+`pipeline_<table>` Databricks jobs via `databricks jobs run-now` - the
+fix for the File Arrival limitation above. From there the 5 `gold_*` jobs
+and `quality_checks` still cascade on their own via their Table Update
+triggers, which don't have the same-filename-overwrite problem (they
+watch Delta table commits, not raw filenames) - so one script run is
+still all that's needed end-to-end, just not purely trigger-driven for
+the first hop.
+
+Because these are 14 separate Job objects rather than one job with an
+internal task DAG, there's no single Databricks screen showing the whole
+chain as one graph - each job's run history only shows its own tasks. To
+see the full lineage end-to-end, use Unity Catalog's table lineage graph
+in Catalog Explorer (e.g. open `gold.fact_application`'s Lineage tab) -
+it traces the real upstream chain automatically regardless of job count.
 
 ## OOP ingestion framework (`src/lakehouse`)
 
@@ -174,8 +265,9 @@ next:
   `BronzeTableConfig` frozen dataclass that derives `landing_path` and
   `target_table` from just a table name.
 - This resolves the tension with "Deliberately 8 separate files" below: the
-  **notebooks stay 8 separate files** (so the Databricks Job still gets 8
-  independent, parallel task boundaries) — they just each instantiate the
+  **notebooks stay 8 separate files** (so each table's `pipeline_<table>`
+  Databricks Job gets its own independent task boundary) — they just each
+  instantiate the
   same `BronzeIngestionJob` with their own `BronzeTableConfig(table=...)`
   instead of repeating the read/write cell. What's shared is the *class*, not
   a loop driving all 8 tables from one script.
@@ -184,12 +276,56 @@ next:
   `validate` for null handling, dedup, FK checks, and star-schema
   aggregation — same base class, same common libraries (`pyspark`, stdlib
   `dataclasses`/`abc`/`logging`), no new dependency per layer.
-- Covered by `tests/test_base.py` and `tests/test_bronze.py`, run locally
-  against `pyspark` + `delta-spark` (no live cluster needed) — see "Working
-  locally" for the version pin this requires.
+- Covered by `tests/unit/test_base.py` (local `pyspark` + `delta-spark`, no
+  live cluster needed — see "Working locally" for the version pin this
+  requires) and `tests/integration/test_bronze.py` (Databricks Connect
+  against the real workspace — see "Repo layout" for why Bronze moved off
+  local unit tests).
+
+## Silver naming convention
+
+Applies from Silver onward only — Bronze keeps the source dataset's raw
+casing (see "Conventions" below), since Bronze's whole point is
+traceability back to the raw CSVs/Postgres tables.
+
+- **Columns** — PascalCase with a trailing type suffix reflecting what the
+  value represents, not just its literal name:
+
+  | Suffix | Meaning | Example |
+  |---|---|---|
+  | `Id` | surrogate key | `SK_ID_CURR` → `CurrId` |
+  | `Amt` | monetary amount | `AMT_INCOME_TOTAL` → `IncomeTotalAmt` |
+  | `Cd` | coded/categorical value | `CODE_GENDER` → `GenderCd` |
+  | `Cnt` | count | `CNT_CHILDREN` → `ChildrenCnt` |
+  | `Flg` | 0/1 boolean | `FLAG_OWN_CAR` → `OwnCarFlg` |
+  | `Days` | relative day-count delta | `DAYS_BIRTH` → `BirthDays` |
+  | `Avg`/`Mode`/`Medi` | normalized housing stat | `APARTMENTS_AVG` → `ApartmentsAvg` |
+
+  `src/lakehouse/naming.py`'s `to_silver_column_name()` applies the
+  mechanical prefix-strip rules above automatically. Anything that doesn't
+  fit a rule (e.g. `EXT_SOURCE_n` normalized scores, which should get a
+  `Score` suffix) goes into that table's `SilverTableConfig.column_overrides`
+  once the table is actually wired up, rather than being guessed at
+  automatically.
+- **`Desc` columns** — opt-in, not mechanical. Where a `Cd` column's codes
+  have a genuinely documented, non-obvious meaning (e.g. `bureau_balance`'s
+  `StatusCd`: `0`-`5`/`C`/`X` DPD buckets), `SilverTableConfig.code_descriptions`
+  adds a `<Column>Desc` column decoding it into text, alongside the coded
+  column rather than replacing it. Most coded/categorical columns are
+  already human-readable text (`CreditActiveCd`, `ContractStatusCd`, ...)
+  and don't need this — only add it where the raw codes are genuinely
+  opaque without a lookup.
+- **Tables** — `tb_<snake_case_name>`, all lowercase, via
+  `to_silver_table_name()` in the same module (e.g. `POS_CASH_balance` →
+  `tb_pos_cash_balance`).
 
 ## Repo layout
 
+- `/databricks.yml` + `/resources/jobs/*.yml` — Databricks Asset Bundle:
+  job-as-code for the 14 orchestration Jobs (one file per job, same
+  one-file-per-unit convention as the notebooks) - see "Orchestration"
+  under "Architecture". Deploy with `databricks bundle deploy --profile
+  azure` from the repo root
 - `/infra/terraform` — Terraform config provisioning the Postgres Flexible
   Server and the Data Factory/landing storage; see "Infrastructure as Code" for
   the module breakdown
@@ -204,24 +340,115 @@ next:
     tables — explicit, separate task boundaries per table in the Databricks
     Job. The read/write logic itself is no longer duplicated across them;
     only the per-table config line differs
-  - `01_silver_transform.py`, `02_gold_aggregation.py`, `03_quality_checks.py` —
-    operate on the whole layer at once, so they stay single notebooks
+  - `silver/<table>.py` × 8 — same pattern as `bronze/`: a thin wrapper
+    instantiating `SilverTableConfig` with that table's `column_overrides`/
+    `dedup_keys`/`fk_checks` and calling `SilverTransformJob(...).run()`.
+    `fk_checks` reads Bronze rather than Silver (see "Data quality"), so
+    every table's job is independent - no run-order dependency between
+    these 8 files, same as Bronze's parallel task boundaries
+  - `gold/<output>.py` × 5 (`fact_application.py`, `dim_bureau.py`,
+    `dim_previous_application.py`, `dim_installments_agg.py`,
+    `dim_credit_card_agg.py`) — same thin-wrapper pattern as `bronze/`/
+    `silver/`: each instantiates a `GoldTableConfig` and calls its job
+    class's `.run()`. All 5 outputs are independent (none reads another
+    Gold table, only Silver), so this follows the established
+    one-file-per-output convention rather than one monolithic script -
+    an earlier draft of this doc assumed Gold would "stay single
+    notebooks" before the design confirmed the outputs don't depend on
+    each other
+  - `03_quality_checks.py` — a thin wrapper instantiating `QualityCheckConfig`
+    (target Gold table + its `great_expectations` expectation tuple) and
+    calling `QualityCheckJob(...).run()`, same pattern as `bronze/`/`silver/`/
+    `gold/`. Currently covers `fact_application` only, per "Data quality"
+  - `silver/profiling/<table>.py` × 8 — same one-file-per-table pattern as
+    `bronze/`/`silver/`, not a pipeline stage. Each is exploratory: what
+    that Bronze table is, its grain, business relevance, key predictive
+    columns, and data-quality quirks, informing that table's
+    `silver/<table>.py` `column_overrides`/`fk_checks` choices. Shared
+    helpers (`null_rate`, `fk_orphan_count`) live in
+    `src/lakehouse/profiling.py` rather than being duplicated across the 8
+    files
 - `/src/lakehouse` — the `LakehouseLayerJob` class hierarchy shared across
-  medallion layers (schema definitions, aggregation functions, and quality
-  check helpers will land here too as Silver/Gold are built out) — see "OOP
-  ingestion framework"
-- `/tests` — unit tests for `/src`, run locally via `pytest` against a local
-  Spark + Delta session (no Databricks cluster required)
-- `/docs` — architecture diagram, ER diagram for the star schema, design notes
+  medallion layers — see "OOP ingestion framework". `base.py`/`bronze.py`
+  (Bronze), `naming.py` (Silver-onward column/table naming rules — pure
+  Python, no Spark import, see "Silver naming convention"), `silver.py`
+  (`SilverTransformJob`/`SilverTableConfig`/`FkCheck`, wired up per-table in
+  `notebooks/silver/<table>.py`), `profiling.py` (`null_rate`/
+  `fk_orphan_count`, shared by `notebooks/silver/profiling/<table>.py`),
+  `gold.py` (`GoldAggregationJob` shared base + `GoldTableConfig`, with
+  one small subclass per Gold output - `FactApplicationJob`/
+  `DimBureauJob`/`DimPreviousApplicationJob`/`DimInstallmentsAggJob`/
+  `DimCreditCardAggJob` - wired up per-output in `notebooks/gold/
+  <output>.py`), `session.py` (Databricks Connect serverless session
+  factory, used only by `tests/integration`), `quality.py`
+  (`QualityCheckJob`/`QualityCheckConfig` - Great Expectations checks
+  against a Gold table via an ephemeral GX `DataContext`, wired up in
+  `notebooks/03_quality_checks.py`, see "Data quality")
+- `/tests/unit` — tests against a local `pyspark` + `delta-spark` session
+  (no Databricks cluster required), run via `uv run pytest tests/unit`.
+  Covers `base.py`/`naming.py`/`silver.py`/`profiling.py`/`gold.py`/
+  `quality.py`; Bronze has no unit tests (see `/tests/integration` below)
+- `/tests/integration` — tests against a real **serverless** Databricks
+  cluster over Databricks Connect (`src/lakehouse/session.py`); run via the
+  separate `.venv-dbconnect` env, not the default one — see "Working
+  locally". `test_bronze.py` is Bronze's only test coverage, deliberately
+  integration-only rather than split like Silver's local-unit +
+  read-only-integration pattern: the team has budget to test against real
+  infrastructure "for everything," and Bronze's `load()` is
+  `mode="overwrite"`, so exercising it for real (including a full `run()`
+  against the real `application_test` table) is just re-running the same
+  idempotent operation the `bronze_ingestion` Databricks Job already
+  performs — not a risky action. The idempotency/schema-change cases that
+  used to point `landing_path_override` at a local `tmp_path` now write
+  synthetic Parquet to a Unity Catalog Volume scratch path instead (the
+  remote serverless cluster can't see the local filesystem, and this
+  workspace has the public DBFS root disabled - `dbfs:/tmp/...` fails with
+  `DbfsDisabledException`, confirmed by hitting it - so a UC Volume is the
+  correct governed equivalent, not DBFS) and target a scratch table name,
+  cleaned up via the Databricks SDK's `WorkspaceClient().files` (recursive
+  delete, since the API's own `delete_directory` refuses non-empty
+  directories) after each test
+- `/docs` — `data_dictionary.md` (column-level reference for all 8 source
+  tables, table relationships, Silver/Gold design notes); an architecture
+  diagram and ER diagram for the star schema are still open per "Completion
+  criteria", not yet added
 - `README.md` — problem statement, architecture summary, how to run
 
 ## Data quality
 
-Validate with Delta Live Tables Expectations or Great Expectations:
-- `SK_ID_CURR` uniqueness in `fact_application`
+Gold-layer checks (`SK_ID_CURR` uniqueness, plausible age/income ranges)
+use **Great Expectations**, not Delta Live Tables Expectations - decided
+because GE is a standalone validation library that layers onto the
+existing plain-PySpark `LakehouseLayerJob` classes as-is, whereas DLT
+Expectations only work inside DLT's own declarative `@dlt.table` pipeline
+definitions, which would mean rewriting Bronze/Silver/Gold into a
+different execution paradigm. GE is also the more broadly transferable
+skill signal for a portfolio aimed at senior DE roles generally, not
+Databricks-specifically. See "Quality (Great Expectations)" under
+"Architecture" and `src/lakehouse/quality.py` for the implementation:
+- `SK_ID_CURR` (`CurrId`) uniqueness in `fact_application`
 - plausible ranges for age/income fields
-- non-null checks on critical fields
-- foreign key integrity between Bronze tables before promoting to Silver
+- non-null checks on critical fields — in Silver today, scoped to each
+  table's grain columns (`SilverTableConfig.dedup_keys` doubles as the
+  null-check list, since a row with a null grain key isn't a meaningful row
+  either — see `src/lakehouse/silver.py`). `SilverTableConfig.sentinel_nulls`
+  additionally nulls out known non-null "this value doesn't apply" sentinels
+  per column (e.g. `application_{train,test}`'s `DAYS_EMPLOYED` uses `365243`
+  for "not currently employed", affecting ~18%/~19% of rows respectively —
+  found via `notebooks/silver/profiling/application_train.py`) without
+  dropping the row. General per-column imputation strategy beyond known
+  sentinels is still Gold-layer feature engineering, not implemented here
+- foreign key integrity between Bronze tables before promoting to Silver —
+  `FkCheck.ref_table` in `SilverTableConfig` points at the *Bronze* parent
+  table specifically (not a Silver one), so every table's
+  `SilverTransformJob` can run independently, in any order. **Not a hard
+  failure**: verified against the real dataset that a non-trivial fraction
+  of rows in `bureau_balance` (~11%), `POS_CASH_balance` (~3%),
+  `credit_card_balance` (~28%), and `installments_payments` (~9%) reference
+  a parent key that genuinely doesn't exist in Bronze — a real
+  characteristic of the Home Credit dataset, not a bug. `transform()` drops
+  those rows and logs a warning instead of raising, so a table's Silver
+  load isn't blocked by data the pipeline can't fix upstream
 
 ## Git commit conventions
 
@@ -269,15 +496,17 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 
 ## Conventions
 
-- Notebooks are numbered and run top-to-bottom; the full pipeline (bronze → gold)
-  should run from a single orchestrated entry point (the Databricks Job).
+- Notebooks are numbered and run top-to-bottom; the full pipeline (bronze → gold →
+  quality) should run from a single orchestrated entry point
+  (`trigger_pipeline.sh`, which drives the 14 Databricks Jobs - see
+  "Orchestration" under "Architecture").
 - Keep transformation logic testable: prefer classes/functions in `/src` over
   inline notebook cells when logic is reused across notebooks. This now
-  includes the 8 per-table Bronze notebooks too — they call the shared
-  `BronzeIngestionJob` class rather than duplicating read/write code, but stay
-  as 8 separate notebook *files* rather than being collapsed into one script
-  that loops over all 8 tables (see "OOP ingestion framework" and "Repo
-  layout").
+  includes the 8 per-table Bronze and Silver notebooks too — they call the
+  shared `BronzeIngestionJob`/`SilverTransformJob` classes rather than
+  duplicating read/write/transform code, but stay as 8 separate notebook
+  *files* each rather than being collapsed into one script that loops over
+  all 8 tables (see "OOP ingestion framework" and "Repo layout").
 - Table/column naming stays in the source dataset's original casing
   (e.g. `SK_ID_CURR`, `AMT_INCOME_TOTAL`) for traceability back to the raw CSVs.
 
@@ -286,9 +515,15 @@ Validate with Delta Live Tables Expectations or Great Expectations:
 Operational details for resuming work in a fresh session - not architecture,
 just "how do I actually run the next command."
 
-- **Tools live in `~/.local/bin`, not on PATH by default** - `uv`, `terraform`,
-  `gh`, `az`, `databricks` were all installed there (no sudo on this machine).
-  Every fresh shell needs `export PATH="$HOME/.local/bin:$PATH"` first.
+- **Tools live in `~/.local/bin`, not on PATH by default** - on the Linux/WSL
+  dev environment this was originally written from, `uv`, `terraform`, `gh`,
+  `az`, `databricks` were all installed there (no sudo on that machine).
+  Every fresh shell needs `export PATH="$HOME/.local/bin:$PATH"` first. **A
+  Windows machine is a different story** - confirmed on one that only had
+  `claude.exe`/`gh.exe`/Python launchers there, with `terraform`/`az`/
+  `databricks` missing entirely. Check with `which <tool>` rather than
+  assuming either environment; install what's missing (e.g. on Windows,
+  `winget install Databricks.DatabricksCLI` for the Databricks CLI).
 - **Real secrets already exist on disk, gitignored** - don't ask "what's the
   password," read the file:
   - `infra/terraform/.env` - `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/
@@ -298,12 +533,39 @@ just "how do I actually run the next command."
     admin IP.
   - `infra/terraform/data-factory/terraform.tfvars` - landing storage account
     name, Postgres admin password (must match platform's).
-  - `~/.databrickscfg` - a Databricks PAT for the `databricks` CLI (SQL
-    grants, warehouse start/stop, Job runs).
-- **`az`/`gh`/`databricks` auth were all set up interactively** (browser
-  device-code flows) - if a fresh session hits auth errors from any of them,
-  that's expected; these can't be restarted programmatically. Ask the user to
-  re-run `az login` / `gh auth login`, or regenerate the Databricks PAT.
+  - `~/.databrickscfg` - may already have unrelated profiles from other
+    projects/workspaces (confirmed once: a `DEFAULT`/named profile pointing
+    at a completely different GCP-hosted workspace) - **don't assume an
+    existing profile is this project's.** This project's real Azure
+    Databricks workspace is `https://adb-7405619456327656.16.azuredatabricks.net`;
+    the profile authenticated against it is named `azure`, set up via
+    `databricks auth login --host https://adb-7405619456327656.16.azuredatabricks.net
+    --profile azure` (browser OAuth, not a PAT). If that profile is missing
+    on a fresh machine, that command recreates it - it just needs the
+    `databricks` CLI installed first (see above) and the user to complete
+    the browser sign-in themselves.
+- **`az`/`gh` auth were set up interactively** (browser device-code flows) -
+  if a fresh session hits auth errors from either, that's expected; these
+  can't be restarted programmatically. Ask the user to re-run `az login` /
+  `gh auth login`.
+- **A freshly-installed CLI may not resolve by bare name even after
+  install** - on Windows, a package manager (e.g. `winget`) can register a
+  PATH entry in the registry without the currently-running terminal process
+  picking it up - confirmed: opening a *new tab/window* in the same
+  already-running terminal app still used the stale PATH, because the host
+  app cached its environment at its own launch time, not the tab's. Closing
+  and fully restarting the terminal *application* (not just its windows)
+  fixed it; the installed binary's full path always works as a fallback
+  in the meantime (e.g. via `winget list --id <pkg>` to locate it).
+- **`python3` is not always safe to assume on Windows** -
+  `trigger_pipeline.sh` shells out to `python3` for JSON parsing (portable,
+  matches `infra/postgres/load_csvs.py`'s convention); on a Windows machine
+  where only `python`/`python.exe` is a real interpreter, `python3` can
+  instead be a Windows "App Execution Alias" that redirects to the
+  Microsoft Store rather than failing cleanly - confirmed on this project's
+  Windows dev machine. If the script errors this way, either install a
+  `python3`-named interpreter or disable that alias (Settings > Apps >
+  Advanced app settings > App execution aliases).
 - **`pyspark` is pinned to `==3.5.3`, not just `<3.6`** - newer 3.5.x patch
   releases (verified broken: 3.5.9) fail every `delta-spark==3.2.1`
   `saveAsTable(mode="overwrite")` locally with `AnalysisException: Table ...
@@ -311,19 +573,50 @@ just "how do I actually run the next command."
   regardless of 2-part vs 3-part table name or `spark.sql.catalogImplementation`.
   Doesn't affect the real pipeline (Databricks Runtime's own Delta/Unity
   Catalog integration doesn't hit this), only local `pytest` runs against
-  `tests/conftest.py`'s local Spark+Delta session - if `uv add`/`uv sync`
+  `tests/unit/conftest.py`'s local Spark+Delta session - if `uv add`/`uv sync`
   ever bumps `pyspark` past `3.5.3`, re-pin it rather than debugging the
   symptom.
+- **Databricks Connect integration tests need a separate venv** -
+  `databricks-connect` and plain `pyspark` fight at Spark-context init time
+  if both are importable in the same environment, so `tests/integration`
+  never shares an env with `tests/unit`. Run
+  `./scripts/setup_dbconnect_env.sh` once (creates `.venv-dbconnect`,
+  installs `databricks-connect`/`pytest`/`python-dotenv` - doesn't touch
+  `pyproject.toml`/`uv.lock`), then
+  `.venv-dbconnect/bin/pytest tests/integration` (`.venv-dbconnect/Scripts/pytest.exe`
+  on Windows) for the serverless-cluster tests, vs. `uv run pytest
+  tests/unit` for the local ones. Auth: `tests/integration/conftest.py`
+  reads the profile name from the `DATABRICKS_CONFIG_PROFILE` env var
+  (falls back to the SDK's own default-profile resolution if unset) rather
+  than a hardcoded name - set it to `azure` (see the `~/.databrickscfg`
+  bullet above for what that profile is and how to recreate it if it's
+  missing).
+- **`databricks-connect` is pinned to `==18.3` on Python 3.12** (both set in
+  `scripts/setup_dbconnect_env.sh`), not latest/whatever Python `uv venv`
+  defaults to - verified broken: `19.0.0` on Python 3.13 fails every
+  serverless session with `INVALID_PARAMETER_VALUE.INVALID_CLIENT_IMAGE_VERSION`,
+  because it requests a client image version newer than this Azure
+  workspace's serverless compute supports. Databricks' own compatibility
+  table (linked in the script) lists `18.0`-`18.3` as the current top
+  serverless-compatible bracket, requiring Python 3.12 - if `tests/
+  integration` ever starts failing the same way again, re-check that table
+  and re-pin both together rather than just bumping the package.
 
 **Resuming work, in order:**
 1. `cd infra/terraform/platform && ./toggle.sh start` - takes a few minutes
    for Postgres to actually come up.
 2. `terraform plan` in both `platform` and `data-factory` to check for drift
    before assuming everything's still intact.
-3. Trigger the ADF pipeline (`az rest ... /pipelines/copy_postgres_to_landing/createRun`)
-   and the Databricks Job (`databricks jobs run-now <job_id>`) as needed - both
-   are manually triggered, no schedule, since Postgres is stopped between
-   sessions.
+3. `./infra/terraform/data-factory/trigger_pipeline.sh` - the one manual
+   kickoff of the whole pipeline. It triggers ADF, waits for it, then
+   explicitly triggers the 8 `pipeline_<table>` Databricks Jobs itself
+   (their File Arrival triggers don't work - see "Orchestration" under
+   "Architecture"); from there the 5 `gold_<output>` Jobs and
+   `quality_checks` cascade on their own via Table Update triggers - no
+   further manual steps needed. (First time only, or
+   after changing `notebooks/00_setup.sql`: run the `setup` job once via
+   `databricks jobs run-now <job_id> --profile azure` before triggering
+   ADF, since schema creation isn't part of the trigger chain.)
 
 ## Completion criteria
 
@@ -332,7 +625,10 @@ just "how do I actually run the next command."
 - Azure Data Factory pipeline landing all 8 tables as Parquet in ADLS Gen2, and
   Databricks notebooks loading them into Unity Catalog's `bronze` schema as Delta
   tables - **done**, verified end-to-end (see "Status").
-- Pipeline runs end-to-end (bronze → gold) from a single command/orchestrated notebook.
+- Pipeline runs end-to-end (bronze → gold → quality checks) from a single
+  command/orchestrated notebook - **done**, verified live twice on
+  2026-08-15 (see "Status") - the second run confirmed the File Arrival
+  trigger fix and parallel ADF copy both work correctly together.
 - Star schema documented with an ER diagram.
 - Power BI dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band, drill-down
@@ -410,8 +706,189 @@ The Bronze notebooks were refactored onto the `LakehouseLayerJob`/
 `BronzeIngestionJob` class hierarchy in `src/lakehouse` (see "OOP ingestion
 framework") - same read-Parquet/write-Delta behavior, now behind a tested,
 reusable class instead of duplicated inline code, and the template method
-(`extract`/`transform`/`validate`/`load`) Silver and Gold will subclass next.
+(`extract`/`transform`/`validate`/`load`) Silver and Gold subclass too.
 
-Next: write `01_silver_transform.py` as a `LakehouseLayerJob` subclass.
-Estimated 2-3 weeks at 5-8h/week (already running longer given the
-ingestion-layer detour and rebuild).
+The Silver layer's framework was built next: `src/lakehouse/naming.py`
+(PascalCase+suffix column naming, `tb_` table naming - pure Python, no
+Spark, see "Silver naming convention"), `src/lakehouse/silver.py`
+(`SilverTransformJob`/`SilverTableConfig`/`FkCheck` - table-agnostic
+extract/transform/validate/load, FK checks via left-anti join rather than
+a subquery, which a prior reverted Silver attempt hit a Photon bug on), and
+`src/lakehouse/session.py` (a Databricks Connect serverless session
+factory). Tests split into `tests/unit` (local `pyspark`+`delta-spark`,
+unchanged behavior) and `tests/integration` (Databricks Connect against a
+real serverless cluster, via the separate `.venv-dbconnect` env from
+`scripts/setup_dbconnect_env.sh` - see "Working locally").
+
+All 8 tables are now wired into `SilverTransformJob`, one per-table
+notebook each under `notebooks/silver/` (mirroring `notebooks/bronze/`'s
+pattern - 8 separate files/Databricks-Job tasks rather than one script
+looping over all 8), informed by the 8 per-table `notebooks/
+silver/profiling/<table>.py` notebooks' findings (see "Silver naming
+convention" for the two real naming-rule misses they surfaced:
+`AMT_REQ_CREDIT_BUREAU_*` are enquiry counts despite the `AMT_` prefix, and
+`NFLAG_*` doesn't match the `FLAG_` prefix rule). `column_overrides` are
+targeted, not exhaustive - only added where the mechanical rule in
+`naming.py` is wrong or simply doesn't fire for an obviously coded/flagged
+column; plain unprefixed descriptive columns fall back to plain PascalCase
+rather than getting a suffix for its own sake.
+
+`tests/integration` now runs clean against this project's actual Azure
+Databricks workspace over Databricks Connect serverless compute (see
+"Working locally" for the `~/.databrickscfg` profile/version-pin setup this
+took) - confirms the real serverless session connects and that
+`SilverTransformJob`'s rename logic produces correct Silver column names
+against the real `application_train` Bronze table.
+
+A read-only dry run of all 8 `SilverTableConfig`s against live Bronze data
+(extract + transform, no `load()`) surfaced a real design gap: `FkCheck`
+originally raised and blocked the whole table on any orphaned row, but the
+real dataset has a genuine, non-trivial orphan rate (`bureau_balance` ~11%,
+`credit_card_balance` ~28%, `POS_CASH_balance` ~3%,
+`installments_payments` ~9%) - not a bug, just how the source data is.
+Fixed by moving the FK check into `transform()` as a filter-and-warn step
+(see "Data quality") instead of a hard failure in `validate()`
+(`SilverTransformJob` no longer overrides `validate()` at all). Verified
+against live data again after the fix: all 8 tables' `extract()`/
+`transform()` now complete cleanly with the expected rows dropped and
+logged.
+
+Running all 8 `notebooks/silver/profiling/<table>.py` notebooks for real
+(not just the FK spot checks) surfaced one more real issue:
+`application_{train,test}`'s `DAYS_EMPLOYED` sentinel value (`365243`,
+~18%/~19% of rows) was passed through untouched. Fixed via a new
+`SilverTableConfig.sentinel_nulls` field - `transform()` nulls out
+configured sentinel values per column without dropping the row. Verified
+against live data: 0 remaining sentinel rows post-transform, row counts
+unchanged.
+
+All 8 `notebooks/silver/*.py` notebooks have now been run for real against
+the live workspace - `consumer_lending_risk_lakehouse.silver` has all 8
+`tb_*` tables, verified by querying them directly afterward (row counts
+match the dry run exactly: `tb_bureau_balance` 24,179,741 rows after
+dropping the 3,120,184 orphans, `tb_application_train` 307,511 with 122
+correctly-renamed columns, etc.). Silver is done end-to-end.
+
+A pass checking whether any Silver `Cd` column's codes had a documented
+but non-obvious meaning worth decoding found exactly one real case:
+`bureau_balance.StatusCd` (`0`-`5`/`C`/`X` DPD buckets, per
+`docs/data_dictionary.md` - itself fixed to spell out all 8 codes instead
+of truncating with "..."). Added via a new `SilverTableConfig.
+code_descriptions` field (see "Silver naming convention") - `StatusDesc`
+sits alongside `StatusCd`, not replacing it. Every other coded/categorical
+Silver column checked was already human-readable text
+(`CreditActiveCd`/`ContractStatusCd`/etc.) or had no documented per-value
+meaning to decode (`CreditCurrencyCd`, `RejectReasonCd`) - a separate pass
+also checked all Silver string columns for typos/casing/whitespace
+inconsistencies directly against live data and found none.
+
+Bronze's test coverage moved from `tests/unit/test_bronze.py` (local
+`pyspark`+`delta-spark`, synthetic data) to `tests/integration/test_bronze.py`
+(Databricks Connect, real workspace) - now that Databricks Connect access to
+the real serverless cluster exists and the team has budget to test against
+real infrastructure, there's no reason to keep validating Bronze against a
+synthetic local session instead of the real ADLS landing zone and real
+Unity Catalog `bronze` schema it actually reads/writes. Verified against
+live data: `extract()` against the real `application_test` landing Parquet
+and a full `run()` into `consumer_lending_risk_lakehouse.bronze.application_test`
+both return/land exactly 48,744 rows, matching the known real count.
+Idempotency and schema-change cases run against a scratch Unity Catalog
+Volume path/table (never the real 8) rather than DBFS - this workspace has
+the public DBFS root disabled, confirmed by actually hitting
+`DbfsDisabledException` on a first attempt - cleaned up via the Databricks
+SDK's Files API after each test.
+
+The Gold star schema is built and live: `src/lakehouse/gold.py`
+(`GoldAggregationJob` shared base + 5 small subclasses, one per output -
+see "Repo layout"), wired up one per notebook under `notebooks/gold/
+<output>.py`. `dim_bureau` and `dim_previous_application` each do a
+2-step rollup (`bureau_balance` → per-`BureauId` signal → per-`CurrId`;
+`POS_CASH_balance` → per-`PrevId` signal → per-`CurrId`) since their
+history tables sit a grain below the parent they roll into.
+`fact_application` unions `tb_application_train`/`tb_application_test`
+with a nullable `Target` and `SampleTypeCd`, per "Architecture".
+
+Verified against live data before and after writing: dry-run
+`extract()`/`transform()` row counts matched hand predictions exactly
+(`fact_application` = 307,511 + 48,744 = 356,255), and a spot-check of one
+real applicant's `dim_bureau` row (8 raw `bureau` rows, 3 active/5 closed,
+`CreditSumAmt` summing to 1,285,239.06) matched the aggregate exactly. All
+5 notebooks then run for real: `consumer_lending_risk_lakehouse.gold` now
+has `fact_application` (356,255 rows), `dim_bureau` (305,811),
+`dim_previous_application` (338,857), `dim_installments_agg` (336,935),
+and `dim_credit_card_agg` (92,447) - row counts match the dry run exactly.
+
+The feature set per dimension is a reasonable first pass (counts, sums,
+means, max delinquency per "Architecture"), not exhaustive feature
+engineering - real modeling work will likely want more later.
+
+`03_quality_checks.py` is built - `src/lakehouse/quality.py`'s
+`QualityCheckJob`/`QualityCheckConfig` running Great Expectations checks
+against `fact_application` (`CurrId` uniqueness, `BirthDays`/
+`IncomeTotalAmt` plausible ranges - see "Data quality" for why GE over DLT
+Expectations), appending results to `quality.check_results` on a pass.
+Unit-tested (`tests/unit/test_quality.py`) and **run for real** (see
+below) - all 3 expectations passed against live `fact_application` data.
+
+Orchestration is built (see "Orchestration" under "Architecture"):
+`databricks.yml` + `resources/jobs/*.yml` define 14 independent Databricks
+Jobs (8 `pipeline_<table>`, 5 `gold_<output>`, 1 `quality_checks`, plus
+`setup`), deployed via `databricks bundle deploy --profile azure`.
+`infra/terraform/data-factory/trigger_pipeline.sh` triggers ADF, waits for
+it, then triggers the 8 `pipeline_<table>` jobs explicitly; the 5
+`gold_<output>` jobs and `quality_checks` still cascade on their own via
+Table Update triggers.
+
+**Run for real end-to-end on 2026-08-15** (`toggle.sh start` →
+`trigger_pipeline.sh` → the 14-job cascade → `quality_checks`). Two real
+bugs surfaced on actual Databricks compute (neither catchable locally) and
+were fixed same-session (see `bugfix/quality-checks-serverless-compat`,
+PR #51): `great-expectations` was never installed on the cluster (added a
+`%pip install` cell), and GX's `SparkDFExecutionEngine` defaults to
+`.persist()`-ing the batch DataFrame, which Spark Connect/serverless
+compute rejects (fixed via `add_spark(..., persist=False)`).
+
+That same run also confirmed the 8 `pipeline_<table>` jobs' File Arrival
+triggers never fire - same root cause as above (see "Orchestration" under
+"Architecture") - worked around in the moment via manual
+`databricks jobs run-now`, then fixed properly the same day: removed the
+dead trigger config from all 8 job YAMLs and rewrote `trigger_pipeline.sh`
+to explicitly trigger them after ADF succeeds. Redeployed and confirmed
+the job-discovery logic finds the right 8 jobs, but **the rewritten
+script hasn't been run live end-to-end yet** (that means starting
+Postgres again) - that's the next session's first verification step.
+
+Every other part of that 2026-08-15 cascade worked exactly as designed:
+`gold_dim_bureau` genuinely waited for both `tb_bureau` and
+`tb_bureau_balance` to commit before firing (spot-checked via start-time
+ordering), and every table's row count post-run matched the
+previously-verified historical values exactly (`bureau_balance`=27,299,925,
+`installments_payments`=13,605,401, `tb_bureau_balance`=24,179,741
+post-FK-drop, `fact_application`=356,255, `dim_bureau`=305,811,
+`dim_installments_agg`=336,935). `bronze_ingestion` deleted afterward,
+confirmed superseded.
+
+`pipeline.tf`'s `ForEachBronzeTable` activity was changed from
+`isSequential = true` to `isSequential = false` + `batchCount = 4` (see
+"Architecture") and **applied for real by the user** on 2026-08-15
+(`terraform apply` is blocked in this session by the user's own auto-mode
+permission policy, same block hit earlier on `force-unlock`, so this
+needed the user to run it themselves from `infra/terraform/data-factory`).
+While there, also imported the long-drifted `databricks_to_landing` role
+assignment (existed live under a different ID than Terraform's stale
+state recorded - see "Infrastructure as Code" gotchas) via `terraform
+import`; `terraform plan` on `data-factory` now shows zero drift.
+
+**Confirmed live end-to-end a second time on 2026-08-15** with both fixes
+in place: `trigger_pipeline.sh` triggered ADF, which finished in ~3
+minutes (down from ~8-9 minutes pre-parallelization), then explicitly
+triggered the 8 `pipeline_<table>` jobs itself as designed - all 8
+succeeded within about 90 seconds of each other. The 5 `gold_<output>`
+jobs and `quality_checks` still cascaded entirely on their own via Table
+Update triggers, unaffected by either fix, finishing the whole 14-job
+run in under 7 minutes total. `quality_checks` passed all 3 expectations
+against the fresh data. Postgres stopped afterward - nothing left running.
+
+Next: the ER diagram and Power BI dashboard, the last two "Completion
+criteria" items. Estimated 2-3 weeks at 5-8h/week (already running longer
+given the ingestion-layer detour and rebuild).

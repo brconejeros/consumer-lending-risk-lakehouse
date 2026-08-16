@@ -1,0 +1,21 @@
+# Bronze -> Silver for credit_card_balance. No trigger here - a File
+# Arrival trigger would never fire, since ADF always overwrites the same
+# filename per table and Databricks doesn't treat that as a new arrival.
+# Triggered explicitly by
+# infra/terraform/data-factory/trigger_pipeline.sh once ADF confirms
+# success - see CLAUDE.md "Databricks orchestration".
+resources:
+  jobs:
+    pipeline_credit_card_balance:
+      name: pipeline_credit_card_balance
+
+      tasks:
+        - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/bronze/credit_card_balance.py
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ../../notebooks/silver/credit_card_balance.py
