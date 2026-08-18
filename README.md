@@ -212,3 +212,12 @@ serverless cluster — see [CLAUDE.md](CLAUDE.md) "Working locally".
 ## License
 
 [MIT](LICENSE)
+
+## Development notes
+
+Built with the assistance of [Claude Code](https://claude.com/claude-code),
+Anthropic's AI coding assistant — used across infrastructure, pipeline, and
+dashboard development, with every architectural decision, debugging step, and
+verification run directed and reviewed against real Azure/Databricks
+infrastructure rather than taken on faith. `CLAUDE.md` in this repo is the
+project's working reference for that process.
