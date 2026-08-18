@@ -73,7 +73,7 @@ fan-out at query time.
   one storage account for the ADF landing zone, a separate one for the
   metastore's own managed storage
 - **Delta Lake + PySpark** for transformation
-- **Databricks SQL Dashboard or Power BI** for the reporting layer
+- **Databricks SQL (Lakeview) AI/BI Dashboard** for the reporting layer
 
 ## Repo structure
 
@@ -92,7 +92,10 @@ notebooks/        → pipeline notebooks, run in order
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
 tests/unit/        → local pyspark+delta-spark tests, no cluster needed
 tests/integration/ → Databricks Connect tests against a real serverless cluster
-docs/         → data_dictionary.md (architecture/ER diagrams still open, see Status)
+docs/         → data_dictionary.md, er_diagram.md (Gold star schema ER diagram)
+dashboards/   → consumer_lending_risk_dashboard.lvdash.json - the published
+                Databricks SQL (Lakeview) AI/BI dashboard definition, importable
+                via `databricks lakeview create/update --json @...`
 CLAUDE.md     → full project/architecture reference
 ```
 
@@ -142,8 +145,10 @@ CLAUDE.md     → full project/architecture reference
       + 5 `gold_<output>` + `quality_checks`), run end-to-end live twice,
       confirmed correct (see CLAUDE.md "Status" for details, including the
       File Arrival trigger fix and ADF parallelization)
-- [ ] Dashboard (Power BI / Databricks SQL) with 3+ visualizations
-- [ ] Architecture + ER diagrams in `/docs`
+- [x] Gold star schema ER diagram (`docs/er_diagram.md`)
+- [x] Databricks SQL (Lakeview) dashboard published with 5 visualizations —
+      2 counters, 2 charts, 1 drill-down table (`dashboards/
+      consumer_lending_risk_dashboard.lvdash.json`)
 
 ## Completion criteria
 
@@ -154,9 +159,11 @@ CLAUDE.md     → full project/architecture reference
 - Pipeline runs end-to-end (bronze → gold → quality) via the 14-job
   Databricks Asset Bundle, chained by data-dependency triggers — **done**,
   verified live twice (see CLAUDE.md "Status").
-- Star schema documented with an ER diagram.
+- Star schema documented with an ER diagram — **done** (`docs/er_diagram.md`).
 - Dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band,
-  drill-down by individual application).
+  drill-down by individual application) — **done**, Databricks SQL (Lakeview)
+  dashboard "Consumer Lending Risk Dashboard", published live against real
+  `gold` data (see CLAUDE.md "Status" for build detail).
 - This README kept current with problem statement, full architecture (including
   the ingestion layer), and how to run.
