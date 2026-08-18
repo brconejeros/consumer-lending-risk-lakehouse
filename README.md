@@ -90,6 +90,8 @@ Verified against the live `gold.fact_application` table (307,511 labeled
 applications): **8.07% overall default rate**. Segment- and cohort-level
 patterns hold up on inspection:
 
+![Dashboard overview — total applications, overall default rate, default rate by income segment, and by income/age band](docs/images/dashboard-overview.png)
+
 - **By income type** — the four largest segments (`Working`, `Commercial
   associate`, `State servant`, `Pensioner`, covering >99% of applicants) sit
   in a believable 5.4%–9.6% range. `Maternity leave`/`Unemployed` show
@@ -101,7 +103,16 @@ patterns hold up on inspection:
 - **Coverage caveat** — only ~26% of applicants have any Home Credit credit
   card history, ~86% have bureau history, so the `dim_*` tables are
   intentionally not 1:1 with `fact_application` (see
-  [`docs/er_diagram.md`](docs/er_diagram.md)).
+  [`docs/er_diagram.md`](docs/er_diagram.md)). The drill-down table below
+  reflects this honestly — `CreditCardCnt`/`UtilizationRatioAvg` show `0`,
+  not a blank cell, for an applicant with no card history.
+
+The searchable drill-down table joins `fact_application` to all 4 Gold
+dimensions (shown here scrolled to its left and right halves):
+
+![Dashboard drill-down, left half — applicant demographics and Target label](docs/images/dashboard-drilldown-1.png)
+
+![Dashboard drill-down, right half — dimension aggregates, with CreditCardCnt/UtilizationRatioAvg showing 0 instead of null](docs/images/dashboard-drilldown-2.png)
 
 These are cohort-level, historical default rates, not a per-applicant
 predicted probability — see [CLAUDE.md](CLAUDE.md) "Future enhancements" for
