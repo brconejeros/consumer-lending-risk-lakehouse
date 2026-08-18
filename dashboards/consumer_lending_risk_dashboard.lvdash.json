@@ -1,0 +1,390 @@
+{
+  "datasets": [
+    {
+      "name": "ds_total_applications",
+      "displayName": "Total applications",
+      "queryLines": [
+        "SELECT COUNT(*) AS total_applications FROM consumer_lending_risk_lakehouse.gold.fact_application WHERE SampleTypeCd = 'TRAIN'"
+      ]
+    },
+    {
+      "name": "ds_overall_default_rate",
+      "displayName": "Overall default rate",
+      "queryLines": [
+        "SELECT ROUND(AVG(Target) * 100, 2) AS overall_default_rate_pct FROM consumer_lending_risk_lakehouse.gold.fact_application WHERE SampleTypeCd = 'TRAIN'"
+      ]
+    },
+    {
+      "name": "ds_risk_by_segment",
+      "displayName": "Default rate by income segment",
+      "queryLines": [
+        "SELECT IncomeTypeCd AS segment, COUNT(*) AS applicant_cnt, ROUND(AVG(Target) * 100, 2) AS default_rate_pct FROM consumer_lending_risk_lakehouse.gold.fact_application WHERE SampleTypeCd = 'TRAIN' GROUP BY IncomeTypeCd ORDER BY default_rate_pct DESC"
+      ]
+    },
+    {
+      "name": "ds_risk_by_income_age_band",
+      "displayName": "Default rate by income/age band",
+      "queryLines": [
+        "SELECT CASE WHEN IncomeTotalAmt < 100000 THEN '1. <100K' WHEN IncomeTotalAmt < 150000 THEN '2. 100-150K' WHEN IncomeTotalAmt < 200000 THEN '3. 150-200K' WHEN IncomeTotalAmt < 300000 THEN '4. 200-300K' ELSE '5. 300K+' END AS income_band, CASE WHEN -BirthDays / 365.25 < 25 THEN '1. <25' WHEN -BirthDays / 365.25 < 35 THEN '2. 25-34' WHEN -BirthDays / 365.25 < 45 THEN '3. 35-44' WHEN -BirthDays / 365.25 < 55 THEN '4. 45-54' WHEN -BirthDays / 365.25 < 65 THEN '5. 55-64' ELSE '6. 65+' END AS age_band, COUNT(*) AS applicant_cnt, ROUND(AVG(Target) * 100, 2) AS default_rate_pct FROM consumer_lending_risk_lakehouse.gold.fact_application WHERE SampleTypeCd = 'TRAIN' GROUP BY income_band, age_band ORDER BY income_band, age_band"
+      ]
+    },
+    {
+      "name": "ds_application_drilldown",
+      "displayName": "Application drill-down",
+      "queryLines": [
+        "SELECT f.CurrId, f.SampleTypeCd, CASE WHEN f.Target = 1 THEN 'Defaulted' WHEN f.Target = 0 THEN 'No default' ELSE 'Not labeled (test sample)' END AS Target, f.GenderCd, ROUND(-f.BirthDays / 365.25, 1) AS AgeYears, f.IncomeTypeCd, f.EducationTypeCd, f.FamilyStatusCd, f.HousingTypeCd, f.IncomeTotalAmt, f.CreditAmt, f.AnnuityAmt, COALESCE(b.BureauCnt, 0) AS BureauCnt, COALESCE(b.BureauActiveCnt, 0) AS BureauActiveCnt, COALESCE(b.CreditSumDebtAmtSum, 0) AS CreditSumDebtAmtSum, COALESCE(p.PrevApplicationCnt, 0) AS PrevApplicationCnt, COALESCE(p.ApprovedCnt, 0) AS ApprovedCnt, COALESCE(p.RefusedCnt, 0) AS RefusedCnt, COALESCE(i.InstallmentCnt, 0) AS InstallmentCnt, COALESCE(i.LateInstallmentCnt, 0) AS LateInstallmentCnt, COALESCE(i.PaymentRatioAvg, 0) AS PaymentRatioAvg, COALESCE(c.CreditCardCnt, 0) AS CreditCardCnt, COALESCE(c.UtilizationRatioAvg, 0) AS UtilizationRatioAvg FROM consumer_lending_risk_lakehouse.gold.fact_application f LEFT JOIN consumer_lending_risk_lakehouse.gold.dim_bureau b ON f.CurrId = b.CurrId LEFT JOIN consumer_lending_risk_lakehouse.gold.dim_previous_application p ON f.CurrId = p.CurrId LEFT JOIN consumer_lending_risk_lakehouse.gold.dim_installments_agg i ON f.CurrId = i.CurrId LEFT JOIN consumer_lending_risk_lakehouse.gold.dim_credit_card_agg c ON f.CurrId = c.CurrId WHERE (:applicant_id IS NULL OR f.CurrId = :applicant_id) ORDER BY f.CurrId LIMIT 500"
+      ],
+      "parameters": [
+        {
+          "displayName": "applicant_id",
+          "keyword": "applicant_id",
+          "dataType": "STRING",
+          "defaultSelection": {}
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Risk Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "w_total_applications",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_total_applications",
+                  "fields": [
+                    {
+                      "name": "sum(total_applications)",
+                      "expression": "SUM(`total_applications`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_applications)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "w_overall_default_rate",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_overall_default_rate",
+                  "fields": [
+                    {
+                      "name": "sum(overall_default_rate_pct)",
+                      "expression": "SUM(`overall_default_rate_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(overall_default_rate_pct)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "w_risk_by_segment",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_risk_by_segment",
+                  "fields": [
+                    {
+                      "name": "segment",
+                      "expression": "`segment`"
+                    },
+                    {
+                      "name": "sum(default_rate_pct)",
+                      "expression": "SUM(`default_rate_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Default rate by income segment"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "segment",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(default_rate_pct)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "w_risk_by_income_age_band",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_risk_by_income_age_band",
+                  "fields": [
+                    {
+                      "name": "sum(default_rate_pct)",
+                      "expression": "SUM(`default_rate_pct`)"
+                    },
+                    {
+                      "name": "age_band",
+                      "expression": "`age_band`"
+                    },
+                    {
+                      "name": "income_band",
+                      "expression": "`income_band`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Default rate by income/age band"
+              },
+              "widgetType": "heatmap",
+              "encodings": {
+                "x": {
+                  "fieldName": "age_band",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "income_band",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "fieldName": "sum(default_rate_pct)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 4,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "applicant-drill-down",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_application_drilldown",
+                  "fields": [
+                    { "name": "CurrId", "expression": "`CurrId`" },
+                    { "name": "SampleTypeCd", "expression": "`SampleTypeCd`" },
+                    { "name": "Target", "expression": "`Target`" },
+                    { "name": "GenderCd", "expression": "`GenderCd`" },
+                    { "name": "AgeYears", "expression": "`AgeYears`" },
+                    { "name": "IncomeTypeCd", "expression": "`IncomeTypeCd`" },
+                    { "name": "EducationTypeCd", "expression": "`EducationTypeCd`" },
+                    { "name": "FamilyStatusCd", "expression": "`FamilyStatusCd`" },
+                    { "name": "HousingTypeCd", "expression": "`HousingTypeCd`" },
+                    { "name": "IncomeTotalAmt", "expression": "`IncomeTotalAmt`" },
+                    { "name": "CreditAmt", "expression": "`CreditAmt`" },
+                    { "name": "AnnuityAmt", "expression": "`AnnuityAmt`" },
+                    { "name": "BureauCnt", "expression": "`BureauCnt`" },
+                    { "name": "BureauActiveCnt", "expression": "`BureauActiveCnt`" },
+                    { "name": "CreditSumDebtAmtSum", "expression": "`CreditSumDebtAmtSum`" },
+                    { "name": "PrevApplicationCnt", "expression": "`PrevApplicationCnt`" },
+                    { "name": "ApprovedCnt", "expression": "`ApprovedCnt`" },
+                    { "name": "RefusedCnt", "expression": "`RefusedCnt`" },
+                    { "name": "InstallmentCnt", "expression": "`InstallmentCnt`" },
+                    { "name": "LateInstallmentCnt", "expression": "`LateInstallmentCnt`" },
+                    { "name": "PaymentRatioAvg", "expression": "`PaymentRatioAvg`" },
+                    { "name": "CreditCardCnt", "expression": "`CreditCardCnt`" },
+                    { "name": "UtilizationRatioAvg", "expression": "`UtilizationRatioAvg`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Applicant Drill-Down"
+              },
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  { "fieldName": "CurrId" },
+                  { "fieldName": "SampleTypeCd" },
+                  { "fieldName": "Target" },
+                  { "fieldName": "GenderCd" },
+                  { "fieldName": "AgeYears" },
+                  { "fieldName": "IncomeTypeCd" },
+                  { "fieldName": "EducationTypeCd" },
+                  { "fieldName": "FamilyStatusCd" },
+                  { "fieldName": "HousingTypeCd" },
+                  { "fieldName": "IncomeTotalAmt" },
+                  { "fieldName": "CreditAmt" },
+                  { "fieldName": "AnnuityAmt" },
+                  { "fieldName": "BureauCnt" },
+                  { "fieldName": "BureauActiveCnt" },
+                  { "fieldName": "CreditSumDebtAmtSum" },
+                  { "fieldName": "PrevApplicationCnt" },
+                  { "fieldName": "ApprovedCnt" },
+                  { "fieldName": "RefusedCnt" },
+                  { "fieldName": "InstallmentCnt" },
+                  { "fieldName": "LateInstallmentCnt" },
+                  { "fieldName": "PaymentRatioAvg" },
+                  { "fieldName": "CreditCardCnt" },
+                  { "fieldName": "UtilizationRatioAvg" }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "search-by-applicant-id",
+            "queries": [
+              {
+                "name": "parameter_dashboards/01f19a89c43c1cecb064edd9b487d0c5/datasets/01f19a8a0266114a953cca5b8305cfcb_applicant_id",
+                "query": {
+                  "datasetName": "ds_application_drilldown",
+                  "parameters": [
+                    {
+                      "name": "applicant_id",
+                      "keyword": "applicant_id"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Search by Applicant ID"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "100001"
+                      }
+                    ]
+                  }
+                }
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "applicant_id",
+                    "queryName": "parameter_dashboards/01f19a89c43c1cecb064edd9b487d0c5/datasets/01f19a8a0266114a953cca5b8305cfcb_applicant_id"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 0,
+            "width": 5,
+            "height": 3
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ]
+}

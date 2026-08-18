@@ -61,7 +61,11 @@ and "Repo layout").
 - Delta Lake + PySpark
 - Star schema modeling
 - Great Expectations — Gold-layer data quality checks, see "Data quality"
-- Power BI or Databricks SQL Dashboard for the presentation layer
+- Databricks SQL (Lakeview) AI/BI Dashboard for the presentation layer - chosen
+  over Power BI since it's scriptable via the `databricks lakeview` API/CLI
+  directly against the same workspace, with no separate desktop app,
+  credential/PAT connection step, or Power BI Service account needed (see
+  "Status" for the full reasoning and how it was built)
 
 ## Infrastructure as Code (Terraform)
 
@@ -409,9 +413,9 @@ traceability back to the raw CSVs/Postgres tables.
   delete, since the API's own `delete_directory` refuses non-empty
   directories) after each test
 - `/docs` — `data_dictionary.md` (column-level reference for all 8 source
-  tables, table relationships, Silver/Gold design notes); an architecture
-  diagram and ER diagram for the star schema are still open per "Completion
-  criteria", not yet added
+  tables, table relationships, Silver/Gold design notes); `er_diagram.md`
+  (Gold star schema ER diagram — `fact_application` + 4 dimensions, with the
+  row-coverage caveat per dimension, see "Completion criteria")
 - `README.md` — problem statement, architecture summary, how to run
 
 ## Data quality
@@ -465,6 +469,10 @@ Databricks-specifically. See "Quality (Great Expectations)" under
   do not touch global git config to do this.
 - The same rule applies to infrastructure: no "claude" or other AI references in
   Azure resource names, resource group names, tags, or SSH key comments.
+- This is about git history/authorship staying clean, not about hiding AI
+  assistance from readers - README.md carries one explicit, honest
+  disclosure that this project was built with Claude Code's help. Don't
+  repeat that disclosure per-commit; it belongs once, in the README.
 - Commit messages use Conventional Commits prefixes: `feat:`, `fix:`, `chore:`,
   `docs:`.
 - Never put an actual secret value (password, key, token, connection string)
@@ -542,8 +550,8 @@ just "how do I actually run the next command."
     `databricks auth login --host https://adb-7405619456327656.16.azuredatabricks.net
     --profile azure` (browser OAuth, not a PAT). If that profile is missing
     on a fresh machine, that command recreates it - it just needs the
-    `databricks` CLI installed first (see above) and the user to complete
-    the browser sign-in themselves.
+    `databricks` CLI installed first (see above) and a manual browser
+    sign-in to complete, since OAuth can't be scripted.
 - **`az`/`gh` auth were set up interactively** (browser device-code flows) -
   if a fresh session hits auth errors from either, that's expected; these
   can't be restarted programmatically. Ask the user to re-run `az login` /
@@ -629,10 +637,12 @@ just "how do I actually run the next command."
   command/orchestrated notebook - **done**, verified live twice on
   2026-08-15 (see "Status") - the second run confirmed the File Arrival
   trigger fix and parallel ADF copy both work correctly together.
-- Star schema documented with an ER diagram.
-- Power BI dashboard published with at least 3 visualizations answering the business
+- Star schema documented with an ER diagram - **done**, `docs/er_diagram.md`.
+- Dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band, drill-down
-  by individual application).
+  by individual application) - **done**, built as a Databricks SQL (Lakeview)
+  dashboard rather than Power BI (see "Status" for why and how) -
+  `dashboards/consumer_lending_risk_dashboard.lvdash.json`.
 - README with problem statement, full architecture (including the ingestion layer),
   and how to run.
 
@@ -652,6 +662,17 @@ Not part of the current build - revisit once the pipeline works end-to-end:
   `previous_application` rows, etc.). The CSVs are a one-time historical
   load, so CDC has nothing to capture without this - without ongoing writes,
   CDC is functionally identical to a one-time snapshot.
+- **Per-applicant default-probability scoring** — the dashboard's risk views
+  (segment/income/age-band default rate) are descriptive/historical, not
+  predictive: they answer "applicants who looked like this defaulted at
+  X%," not "this specific applicant's probability of default." A real
+  answer to the latter needs a trained classifier (e.g. logistic
+  regression or gradient boosting) fit on `gold.fact_application` joined
+  to its 4 dimensions - which are already feature-engineering-ready for
+  this (see "Architecture" → Gold) - scoring each `SampleTypeCd = 'TEST'`
+  applicant (`Target IS NULL`) with a predicted probability. Not built:
+  this project's scope stopped at the lakehouse + analytics dashboard,
+  not a model-serving layer.
 
 ## Status
 
@@ -693,8 +714,8 @@ Home Credit dataset sizes exactly (e.g. `bureau_balance` = 27,299,925,
 
 The Databricks Job currently runs as the creating user rather than the service
 principal - setting `run_as` to a service principal needs the account-level
-"Account Access Control Proxy" API, which needs account-admin auth not
-configured in this session; not worth the setup for a portfolio project where
+"Account Access Control Proxy" API, which needs account-admin auth not yet
+configured; not worth the setup for a portfolio project where
 the SP's actual security-relevant role (governing data access via Unity Catalog
 grants) is unaffected either way.
 
@@ -870,10 +891,10 @@ confirmed superseded.
 
 `pipeline.tf`'s `ForEachBronzeTable` activity was changed from
 `isSequential = true` to `isSequential = false` + `batchCount = 4` (see
-"Architecture") and **applied for real by the user** on 2026-08-15
-(`terraform apply` is blocked in this session by the user's own auto-mode
-permission policy, same block hit earlier on `force-unlock`, so this
-needed the user to run it themselves from `infra/terraform/data-factory`).
+"Architecture") and **applied for real** on 2026-08-15 (`terraform apply`
+requires interactive confirmation that can't be scripted, the same
+constraint hit earlier on `force-unlock`, so this was run manually from
+`infra/terraform/data-factory`).
 While there, also imported the long-drifted `databricks_to_landing` role
 assignment (existed live under a different ID than Terraform's stale
 state recorded - see "Infrastructure as Code" gotchas) via `terraform
@@ -889,6 +910,70 @@ Update triggers, unaffected by either fix, finishing the whole 14-job
 run in under 7 minutes total. `quality_checks` passed all 3 expectations
 against the fresh data. Postgres stopped afterward - nothing left running.
 
-Next: the ER diagram and Power BI dashboard, the last two "Completion
-criteria" items. Estimated 2-3 weeks at 5-8h/week (already running longer
-given the ingestion-layer detour and rebuild).
+The Gold star schema ER diagram is now built: `docs/er_diagram.md` (Mermaid
+`erDiagram`, `fact_application` + 4 dimensions). Documents each dimension's
+real column set straight from `src/lakehouse/gold.py` rather than a generic
+sketch, and calls out a real design nuance the row counts already showed
+(see "Status" further up, and "Architecture" → Gold): each dimension only
+has a row for a `CurrId` with at least one row in that satellite table, so
+the fact→dimension relationship is optional (`||--o|`), not a guaranteed
+`1:1` for every applicant - e.g. `dim_credit_card_agg` only covers ~26% of
+applicants (92,447 of 356,255), since most applicants never had a Home
+Credit credit card. Downstream consumers (Power BI / Databricks SQL) should
+left-join on `CurrId` and treat a null post-join aggregate as "no history,"
+not missing data.
+
+The dashboard - the last "Completion criteria" item - is built and published
+as a **Databricks SQL (Lakeview) AI/BI dashboard** rather than Power BI.
+Power BI would have needed a local desktop install (confirmed not present on
+the dev machine), a Personal Access Token or Azure AD sign-in typed into
+Power BI's connector UI (entering credentials/tokens isn't something this
+session can do), and a separate Power BI Service account to publish to.
+Lakeview needed none of that: it runs in the same workspace already
+authenticated via the `azure` `databricks` CLI profile, against the same
+`gold` tables, with no separate connector/auth step.
+
+Built via the `databricks lakeview create`/`update`/`publish` API (not
+clicked together by hand) against the existing `Serverless Starter Warehouse`
+(`warehouse_id: 9b1762275ab88f7f`, same one `resources/jobs/setup.yml`
+already uses) - 5 datasets, 5 data widgets (2 counters - total labeled
+applications, overall default rate; a bar chart - default rate by income
+segment; a heatmap - default rate by income × age band; a searchable
+drill-down table joining `fact_application` to all 4 dimensions) plus 1
+filter widget. The full definition is saved at `dashboards/
+consumer_lending_risk_dashboard.lvdash.json` for reproducibility - not just
+workspace-only UI state, same "everything as code" instinct as the rest of
+this repo.
+
+Two real API/schema gotchas surfaced building this blind (Lakeview's widget
+JSON schema isn't publicly documented in the same depth as the REST API
+itself), both resolved by opening the draft in the browser and letting the
+dashboard *builder* auto-correct the malformed parts, then reading back its
+corrected JSON to learn the real shape:
+- A widget's `encodings.<axis>.fieldName` alone doesn't bind data - the
+  query's `fields[]` need an aggregation-wrapped `expression` (e.g.
+  `SUM(\`default_rate_pct\`)`) and the widget `spec` needs an explicit
+  `data.queryName` pointing at its query. Submitting the schema without
+  these fields via `databricks lakeview create` was accepted by the API
+  with no error, but rendered every widget as empty ("select at least one
+  field") until fixed - the API's own JSON schema validation doesn't
+  catch this class of "structurally valid but functionally unbound" spec.
+- A single-value `STRING` dataset parameter (`:applicant_id`, used for the
+  drill-down search) has no implicit "unset = NULL" state - an unset
+  parameter fails the whole query with `Missing selection for parameter`
+  rather than passing through the `:applicant_id IS NULL OR ...` guard in
+  the SQL. Fixed by giving the filter widget a real `Default Value`
+  (`100001`, a genuine `CurrId`) so the table always has a valid row on
+  first load instead of erroring - the search box still lets a viewer type
+  any other `CurrId`.
+
+Verified live against real data before publishing: 307,511 labeled
+applications, 8.07% overall default rate, the same per-segment/per-band
+default-rate pattern already spot-checked via the SQL Statement Execution
+API directly (e.g. `Maternity leave`/`Unemployed` segments show the highest
+default rates but on tiny sample sizes - `n=5`/`n=22` - while the large
+segments `Working`/`Commercial associate`/`State servant`/`Pensioner` show
+a believable 5-10% range), and the drill-down search tested against a real
+`CurrId` (`100003`) returning the exact expected row. Published with
+"Share data permission" (publisher credential) so any workspace viewer can
+open it without their own Unity Catalog grants.

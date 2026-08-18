@@ -62,6 +62,9 @@ fan-out at query time.
 
 ## Stack
 
+- **Terraform** (`azurerm` provider) — provisions the Postgres Flexible Server,
+  Data Factory instance, and ADLS Gen2 landing storage as code, with remote
+  state in an Azure Storage Account
 - **Azure Database for PostgreSQL – Flexible Server** — simulated transactional
   origination source
 - **Azure Data Factory** — Postgres source → ADLS Gen2 Parquet landing, one
@@ -73,7 +76,47 @@ fan-out at query time.
   one storage account for the ADF landing zone, a separate one for the
   metastore's own managed storage
 - **Delta Lake + PySpark** for transformation
-- **Databricks SQL Dashboard or Power BI** for the reporting layer
+- **Databricks Asset Bundle** — job-as-code orchestration: 14 independent
+  Databricks Jobs (8 per-table Bronze→Silver pipelines, 5 Gold aggregations,
+  1 quality-check job) chained by data-dependency (Table Update) triggers,
+  not a fixed schedule
+- **Great Expectations** — Gold-layer data quality checks (uniqueness,
+  plausible-range validation), audited to a Delta table on every passing run
+- **Databricks SQL (Lakeview) AI/BI Dashboard** for the reporting layer
+
+## Results
+
+Verified against the live `gold.fact_application` table (307,511 labeled
+applications): **8.07% overall default rate**. Segment- and cohort-level
+patterns hold up on inspection:
+
+![Dashboard overview — total applications, overall default rate, default rate by income segment, and by income/age band](docs/images/dashboard-overview.png)
+
+- **By income type** — the four largest segments (`Working`, `Commercial
+  associate`, `State servant`, `Pensioner`, covering >99% of applicants) sit
+  in a believable 5.4%–9.6% range. `Maternity leave`/`Unemployed` show
+  higher rates but on tiny samples (n=5/n=22) — not statistically reliable
+  on their own.
+- **By income × age band** — default rate falls steadily with both higher
+  income and older age, forming a clean gradient from ~13% (youngest,
+  lowest-income) down to <2% (oldest, highest-income).
+- **Coverage caveat** — only ~26% of applicants have any Home Credit credit
+  card history, ~86% have bureau history, so the `dim_*` tables are
+  intentionally not 1:1 with `fact_application` (see
+  [`docs/er_diagram.md`](docs/er_diagram.md)). The drill-down table below
+  reflects this honestly — `CreditCardCnt`/`UtilizationRatioAvg` show `0`,
+  not a blank cell, for an applicant with no card history.
+
+The searchable drill-down table joins `fact_application` to all 4 Gold
+dimensions (shown here scrolled to its left and right halves):
+
+![Dashboard drill-down, left half — applicant demographics and Target label](docs/images/dashboard-drilldown-1.png)
+
+![Dashboard drill-down, right half — dimension aggregates, with CreditCardCnt/UtilizationRatioAvg showing 0 instead of null](docs/images/dashboard-drilldown-2.png)
+
+These are cohort-level, historical default rates, not a per-applicant
+predicted probability — see [CLAUDE.md](CLAUDE.md) "Future enhancements" for
+what a real scoring model on top of this star schema would take.
 
 ## Repo structure
 
@@ -92,11 +135,19 @@ notebooks/        → pipeline notebooks, run in order
 src/lakehouse/    → LakehouseLayerJob class hierarchy shared across Bronze/Silver/Gold
 tests/unit/        → local pyspark+delta-spark tests, no cluster needed
 tests/integration/ → Databricks Connect tests against a real serverless cluster
-docs/         → data_dictionary.md (architecture/ER diagrams still open, see Status)
+docs/         → data_dictionary.md, er_diagram.md (Gold star schema ER diagram)
+dashboards/   → consumer_lending_risk_dashboard.lvdash.json - the published
+                Databricks SQL (Lakeview) AI/BI dashboard definition, importable
+                via `databricks lakeview create/update --json @...`
 CLAUDE.md     → full project/architecture reference
 ```
 
 ## How to run
+
+**Prerequisites**: an Azure subscription, an Azure Databricks workspace with
+Unity Catalog, and the `terraform`/`az`/`databricks` CLIs. Real infra, not a
+local sandbox — see [CLAUDE.md](CLAUDE.md) "Working locally" for the full
+tool/auth setup.
 
 1. **Deploy the Databricks Jobs** (one-time, or after changing a notebook/
    job definition): `databricks bundle deploy --profile azure` from the
@@ -121,6 +172,10 @@ CLAUDE.md     → full project/architecture reference
    or Unity Catalog's table lineage graph in Catalog Explorer (open
    `gold.fact_application` → Lineage) for the whole chain in one view.
 
+**Tests**: `uv run pytest tests/unit` (local `pyspark`+`delta-spark`, no
+cluster needed). `tests/integration` needs a separate env against a real
+serverless cluster — see [CLAUDE.md](CLAUDE.md) "Working locally".
+
 ## Status
 
 - [x] Azure infra provisioned (Databricks workspace, Unity Catalog metastore,
@@ -142,8 +197,10 @@ CLAUDE.md     → full project/architecture reference
       + 5 `gold_<output>` + `quality_checks`), run end-to-end live twice,
       confirmed correct (see CLAUDE.md "Status" for details, including the
       File Arrival trigger fix and ADF parallelization)
-- [ ] Dashboard (Power BI / Databricks SQL) with 3+ visualizations
-- [ ] Architecture + ER diagrams in `/docs`
+- [x] Gold star schema ER diagram (`docs/er_diagram.md`)
+- [x] Databricks SQL (Lakeview) dashboard published with 5 visualizations —
+      2 counters, 2 charts, 1 drill-down table (`dashboards/
+      consumer_lending_risk_dashboard.lvdash.json`)
 
 ## Completion criteria
 
@@ -154,9 +211,24 @@ CLAUDE.md     → full project/architecture reference
 - Pipeline runs end-to-end (bronze → gold → quality) via the 14-job
   Databricks Asset Bundle, chained by data-dependency triggers — **done**,
   verified live twice (see CLAUDE.md "Status").
-- Star schema documented with an ER diagram.
+- Star schema documented with an ER diagram — **done** (`docs/er_diagram.md`).
 - Dashboard published with at least 3 visualizations answering the business
   problem (risk distribution by segment, default rate by income/age band,
-  drill-down by individual application).
+  drill-down by individual application) — **done**, Databricks SQL (Lakeview)
+  dashboard "Consumer Lending Risk Dashboard", published live against real
+  `gold` data (see CLAUDE.md "Status" for build detail).
 - This README kept current with problem statement, full architecture (including
   the ingestion layer), and how to run.
+
+## License
+
+[MIT](LICENSE)
+
+## Development notes
+
+Built with the assistance of [Claude Code](https://claude.com/claude-code),
+Anthropic's AI coding assistant — used across infrastructure, pipeline, and
+dashboard development, with every architectural decision, debugging step, and
+verification run directed and reviewed against real Azure/Databricks
+infrastructure rather than taken on faith. `CLAUDE.md` in this repo is the
+project's working reference for that process.
