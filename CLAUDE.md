@@ -469,6 +469,10 @@ Databricks-specifically. See "Quality (Great Expectations)" under
   do not touch global git config to do this.
 - The same rule applies to infrastructure: no "claude" or other AI references in
   Azure resource names, resource group names, tags, or SSH key comments.
+- This is about git history/authorship staying clean, not about hiding AI
+  assistance from readers - README.md carries one explicit, honest
+  disclosure that this project was built with Claude Code's help. Don't
+  repeat that disclosure per-commit; it belongs once, in the README.
 - Commit messages use Conventional Commits prefixes: `feat:`, `fix:`, `chore:`,
   `docs:`.
 - Never put an actual secret value (password, key, token, connection string)
@@ -546,8 +550,8 @@ just "how do I actually run the next command."
     `databricks auth login --host https://adb-7405619456327656.16.azuredatabricks.net
     --profile azure` (browser OAuth, not a PAT). If that profile is missing
     on a fresh machine, that command recreates it - it just needs the
-    `databricks` CLI installed first (see above) and the user to complete
-    the browser sign-in themselves.
+    `databricks` CLI installed first (see above) and a manual browser
+    sign-in to complete, since OAuth can't be scripted.
 - **`az`/`gh` auth were set up interactively** (browser device-code flows) -
   if a fresh session hits auth errors from either, that's expected; these
   can't be restarted programmatically. Ask the user to re-run `az login` /
@@ -710,8 +714,8 @@ Home Credit dataset sizes exactly (e.g. `bureau_balance` = 27,299,925,
 
 The Databricks Job currently runs as the creating user rather than the service
 principal - setting `run_as` to a service principal needs the account-level
-"Account Access Control Proxy" API, which needs account-admin auth not
-configured in this session; not worth the setup for a portfolio project where
+"Account Access Control Proxy" API, which needs account-admin auth not yet
+configured; not worth the setup for a portfolio project where
 the SP's actual security-relevant role (governing data access via Unity Catalog
 grants) is unaffected either way.
 
@@ -887,10 +891,10 @@ confirmed superseded.
 
 `pipeline.tf`'s `ForEachBronzeTable` activity was changed from
 `isSequential = true` to `isSequential = false` + `batchCount = 4` (see
-"Architecture") and **applied for real by the user** on 2026-08-15
-(`terraform apply` is blocked in this session by the user's own auto-mode
-permission policy, same block hit earlier on `force-unlock`, so this
-needed the user to run it themselves from `infra/terraform/data-factory`).
+"Architecture") and **applied for real** on 2026-08-15 (`terraform apply`
+requires interactive confirmation that can't be scripted, the same
+constraint hit earlier on `force-unlock`, so this was run manually from
+`infra/terraform/data-factory`).
 While there, also imported the long-drifted `databricks_to_landing` role
 assignment (existed live under a different ID than Terraform's stale
 state recorded - see "Infrastructure as Code" gotchas) via `terraform
