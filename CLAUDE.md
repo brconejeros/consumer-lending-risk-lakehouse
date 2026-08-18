@@ -658,6 +658,17 @@ Not part of the current build - revisit once the pipeline works end-to-end:
   `previous_application` rows, etc.). The CSVs are a one-time historical
   load, so CDC has nothing to capture without this - without ongoing writes,
   CDC is functionally identical to a one-time snapshot.
+- **Per-applicant default-probability scoring** — the dashboard's risk views
+  (segment/income/age-band default rate) are descriptive/historical, not
+  predictive: they answer "applicants who looked like this defaulted at
+  X%," not "this specific applicant's probability of default." A real
+  answer to the latter needs a trained classifier (e.g. logistic
+  regression or gradient boosting) fit on `gold.fact_application` joined
+  to its 4 dimensions - which are already feature-engineering-ready for
+  this (see "Architecture" → Gold) - scoring each `SampleTypeCd = 'TEST'`
+  applicant (`Target IS NULL`) with a predicted probability. Not built:
+  this project's scope stopped at the lakehouse + analytics dashboard,
+  not a model-serving layer.
 
 ## Status
 
